@@ -2,15 +2,13 @@ import asyncio
 from datetime import timedelta
 
 from temporalio import workflow
-from pydantic_ai.durable_exec.temporal import PydanticAIWorkflow
+from temporalio.common import RetryPolicy
 
 with workflow.unsafe.imports_passed_through():
-    from src.agents.pr_fixer import temporal_agent
     from src.models import (
         PRRef,
         GitHubEvent,
         WorkflowState,
-        AgentDeps,
         FixPlan,
     )
     from src.activities.lifecycle import (
@@ -18,6 +16,7 @@ with workflow.unsafe.imports_passed_through():
         cleanup_workdir,
         post_status,
     )
+    from src.activities.agent_iteration import run_agent_iteration
 
 
 MAX_ITERATIONS = 5
@@ -25,9 +24,7 @@ IDLE_TIMEOUT = timedelta(minutes=30)
 
 
 @workflow.defn(name="PRAutofixWorkflow")
-class PRAutofixWorkflow(PydanticAIWorkflow):
-    __pydantic_ai_agents__ = [temporal_agent]
-
+class PRAutofixWorkflow:
     @workflow.init
     def __init__(self, init: PRRef | WorkflowState) -> None:
         self._state: WorkflowState = (
@@ -74,26 +71,27 @@ class PRAutofixWorkflow(PydanticAIWorkflow):
                 events_snapshot = list(self._state.pending_events)
                 self._state.pending_events.clear()
 
-                deps = AgentDeps(
-                    workdir_id=workflow.info().workflow_id,
-                    pr=self._state.pr,
-                )
                 try:
-                    result = await temporal_agent.run(
-                        self._build_prompt(events_snapshot),
-                        deps=deps,
+                    plan: FixPlan = await workflow.execute_activity(
+                        run_agent_iteration,
+                        args=[self._state, events_snapshot],
+                        start_to_close_timeout=timedelta(minutes=10),
+                        heartbeat_timeout=timedelta(seconds=90),
+                        retry_policy=RetryPolicy(
+                            maximum_attempts=2,
+                            initial_interval=timedelta(seconds=30),
+                            backoff_coefficient=2.0,
+                        ),
                     )
-                    plan: FixPlan = result.output
-                    self._apply_plan(plan)
                 except Exception as exc:
-                    # Spec §7/§10: post status even when the agent raises.
-                    # Synthesize a blocked plan so post_status can report the failure.
                     plan = FixPlan(
                         action="blocked",
                         summary="Agent iteration failed.",
                         blocking_reason=f"{type(exc).__name__}: {exc}",
                     )
-                    self._state.closed = True  # don't try again automatically
+                    self._state.closed = True
+
+                self._apply_plan(plan)
 
                 self._state = await workflow.execute_activity(
                     post_status,
@@ -112,18 +110,6 @@ class PRAutofixWorkflow(PydanticAIWorkflow):
                     start_to_close_timeout=timedelta(minutes=2),
                 )
         return f"done after {self._state.iterations} iterations"
-
-    def _build_prompt(self, events: list[GitHubEvent]) -> str:
-        pr = self._state.pr
-        lines = [
-            f"PR: {pr.owner}/{pr.repo}#{pr.number} (head {pr.head_sha[:7]} on {pr.head_ref})",
-            f"Iteration: {self._state.iterations}",
-            "",
-            "Pending events:",
-        ]
-        for e in events:
-            lines.append(f"- [{e.kind}] delivery={e.delivery_id} payload_keys={sorted(e.payload.keys())}")
-        return "\n".join(lines)
 
     def _apply_plan(self, plan: FixPlan) -> None:
         self._state.processed_comment_ids |= set(plan.addressed_comment_ids)
