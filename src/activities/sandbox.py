@@ -37,7 +37,6 @@ from src.models import PRRef, SandboxHandle, ExecResult
 
 SANDBOX_IMAGE = "agent-sandbox:latest"
 SANDBOX_WORKDIR = "/work"
-SANDBOX_NETWORK = "sandbox-net"
 
 
 # Re-exported for backward compatibility with callers that imported from
@@ -93,8 +92,13 @@ def _provision_sandbox_impl(
         "pids_limit": 256,
         "cap_drop": ["ALL"],
         "security_opt": ["no-new-privileges:true"],
-        "network": SANDBOX_NETWORK,
     }
+    # Network name is project-prefixed by docker-compose
+    # (e.g. agent-temporal_sandbox-net). Read it from env, fall back to
+    # default daemon bridge if unset.
+    sandbox_network = _os.environ.get("SANDBOX_NETWORK_NAME")
+    if sandbox_network:
+        run_kwargs["network"] = sandbox_network
     if worker_hostname:
         run_kwargs["volumes_from"] = [worker_hostname]
     container = client.containers.run(SANDBOX_IMAGE, **run_kwargs)

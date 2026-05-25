@@ -10,8 +10,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN pip install --no-cache-dir ruff pytest
 
-# Non-root user; matches the uid the worker uses to exec into the
-# sandbox so cloned files have predictable ownership.
-RUN useradd -m -u 1000 -s /bin/bash sandbox
-USER 1000:1000
+# Note: the sandbox runs as root inside the container to match the
+# worker's uid (the worker also runs as root and chowns workdir files
+# accordingly). The hard isolation boundary is cap_drop=ALL +
+# no-new-privileges applied at container creation, not the in-container
+# uid. Production: align worker + sandbox to a non-root uid together.
 WORKDIR /work

@@ -48,6 +48,9 @@ services:
       # The claude CLI refuses --dangerously-skip-permissions when run as
       # root unless this env var is set (it acknowledges we're sandboxed).
       - IS_SANDBOX=1
+      # The sandbox-net network is project-prefixed by docker-compose;
+      # pass the resolved name so provision_sandbox can attach to it.
+      - SANDBOX_NETWORK_NAME=${COMPOSE_PROJECT_NAME:-agent-temporal}_sandbox-net
     depends_on:
       - temporal
       - sandbox-image
