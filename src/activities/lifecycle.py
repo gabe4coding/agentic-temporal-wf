@@ -87,25 +87,42 @@ async def post_status(state: WorkflowState, plan: FixPlan) -> WorkflowState:
             )
             r.raise_for_status()
 
-        # Check Run: create new (we don't track its conclusion lifecycle in the PoC)
+        # Check Run: create new (best-effort).
+        #
+        # GitHub's check-runs API requires a GitHub App identity — PATs
+        # (classic or fine-grained) get a 403 here. The status comment
+        # above is the primary feedback channel; the check run is bonus
+        # for installations that authenticate via App. Swallow common
+        # failures so the activity completes and the workflow makes
+        # progress on the comment side.
         conclusion = {
             "applied_fix": "success",
             "no_action_needed": "neutral",
             "blocked": "failure",
         }[plan.action]
-        r = await client.post(
-            f"https://api.github.com/repos/{pr.owner}/{pr.repo}/check-runs",
-            headers=headers,
-            json={
-                "name": "AutoFix",
-                "head_sha": pr.head_sha,
-                "status": "completed",
-                "conclusion": conclusion,
-                "output": {"title": "AutoFix", "summary": plan.summary},
-            },
-        )
-        r.raise_for_status()
-        state.last_check_run_id = r.json()["id"]
+        try:
+            r = await client.post(
+                f"https://api.github.com/repos/{pr.owner}/{pr.repo}/check-runs",
+                headers=headers,
+                json={
+                    "name": "AutoFix",
+                    "head_sha": pr.head_sha,
+                    "status": "completed",
+                    "conclusion": conclusion,
+                    "output": {"title": "AutoFix", "summary": plan.summary},
+                },
+            )
+            if r.status_code == 201:
+                state.last_check_run_id = r.json()["id"]
+            elif r.status_code in (403, 404, 422):
+                # Auth identity can't write checks, or repo doesn't support
+                # them — silently skip. Leave last_check_run_id unset.
+                pass
+            else:
+                r.raise_for_status()
+        except httpx.HTTPError:
+            # Network / parse failures shouldn't fail the whole iteration.
+            pass
 
     return state
 
