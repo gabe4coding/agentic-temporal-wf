@@ -60,3 +60,48 @@ def test_prepare_workdir_uses_head_ref_as_local_branch(tmp_path: Path, tmp_repo_
         cwd=target, capture_output=True, text=True, check=True,
     ).stdout.strip()
     assert out == "main"
+
+
+def test_prepare_workdir_wipes_dirty_local_edits(tmp_path: Path, tmp_repo_with_remote: Path):
+    """Second prepare_workdir_at on the same workdir must wipe local edits
+    from a previous iteration so the checkout doesn't refuse."""
+    target = tmp_path / "autofix-wf1" / "repo"
+    remote_url = str(tmp_repo_with_remote.parent / "remote.git")
+    _prepare_workdir_at(
+        target=target,
+        clone_url=remote_url,
+        head_ref="main",
+        head_sha="HEAD",
+    )
+    # Simulate an uncommitted edit left by a previous iteration.
+    (target / "hello.py").write_text("agent edits never committed\n")
+    # Second call: must succeed and reset the file.
+    _prepare_workdir_at(
+        target=target,
+        clone_url=remote_url,
+        head_ref="main",
+        head_sha="HEAD",
+    )
+    assert (target / "hello.py").read_text().startswith("def hello()")
+
+
+def test_prepare_workdir_sets_repo_local_bot_identity(tmp_path: Path, tmp_repo_with_remote: Path):
+    target = tmp_path / "autofix-wf1" / "repo"
+    remote_url = str(tmp_repo_with_remote.parent / "remote.git")
+    _prepare_workdir_at(
+        target=target,
+        clone_url=remote_url,
+        head_ref="main",
+        head_sha="HEAD",
+    )
+    import subprocess
+    name = subprocess.run(
+        ["git", "config", "user.name"],
+        cwd=target, capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    email = subprocess.run(
+        ["git", "config", "user.email"],
+        cwd=target, capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    assert name == "Claude"
+    assert email == "noreply@anthropic.com"

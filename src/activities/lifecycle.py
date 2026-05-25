@@ -14,15 +14,35 @@ def _run(cmd: list[str], cwd: Path) -> None:
     subprocess.run(cmd, cwd=cwd, check=True, capture_output=True)
 
 
+# Local bot identity for autofix commits. Repo-scoped (not --global) so it
+# can't leak into other tools the worker might invoke. Uses Anthropic's
+# canonical noreply address so commits are recognizably from Claude.
+_AUTOFIX_BOT_NAME = "Claude"
+_AUTOFIX_BOT_EMAIL = "noreply@anthropic.com"
+
+
 def _prepare_workdir_at(
     *, target: Path, clone_url: str, head_ref: str, head_sha: str
 ) -> None:
-    """Idempotent clone-or-fetch."""
+    """Idempotent clone-or-fetch + repo-local git identity for the bot.
+
+    Sets user.name / user.email at the repo level so `git commit` from the
+    repo MCP tool succeeds. Without this, `git commit` refuses with
+    "Author identity unknown" inside a fresh container.
+    """
     target.parent.mkdir(parents=True, exist_ok=True)
     if not (target / ".git").is_dir():
         target.mkdir(exist_ok=True)
         _run(["git", "clone", "--depth=50", clone_url, "."], target)
+    _run(["git", "config", "user.name", _AUTOFIX_BOT_NAME], target)
+    _run(["git", "config", "user.email", _AUTOFIX_BOT_EMAIL], target)
     _run(["git", "fetch", "origin", head_ref], target)
+    # Hard-reset the working tree before checkout so leftover uncommitted
+    # edits from a previous failed iteration don't make checkout refuse.
+    # (The volume persists across worker restarts; without this reset, a
+    # prior iteration that failed after applying edits leaves the workdir
+    # dirty and the next prepare_workdir would crash on checkout.)
+    _run(["git", "reset", "--hard", "FETCH_HEAD"], target)
     _run(["git", "checkout", "-B", head_ref, "FETCH_HEAD"], target)
 
 
