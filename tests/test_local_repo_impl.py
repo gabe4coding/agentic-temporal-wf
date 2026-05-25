@@ -121,3 +121,20 @@ def test_git_commit_and_push_nothing_to_commit(tmp_repo_with_remote: Path):
     res = git_commit_and_push(tmp_repo_with_remote, "autofix")
     assert res.pushed is False
     assert res.reason == "no_changes"
+
+
+import os
+import pytest as _pytest_for_workdir_env  # local alias to avoid collisions
+from src.tools._workdir import workdir_root_from_env
+
+
+def test_workdir_root_from_env_resolves(monkeypatch):
+    monkeypatch.setenv("AUTOFIX_WORKDIR_ID", "abc123")
+    p = workdir_root_from_env()
+    assert str(p) == "/tmp/autofix-abc123/repo"
+
+
+def test_workdir_root_from_env_raises_when_unset(monkeypatch):
+    monkeypatch.delenv("AUTOFIX_WORKDIR_ID", raising=False)
+    with _pytest_for_workdir_env.raises(RuntimeError, match="AUTOFIX_WORKDIR_ID"):
+        workdir_root_from_env()
