@@ -30,6 +30,16 @@ services:
     ports:
       - "8233:8080"
 
+  sandbox-image:
+    # One-shot service that builds the per-workflow sandbox image. The
+    # worker spawns sibling containers from this image via the mounted
+    # docker.sock; it does NOT run the image itself.
+    build:
+      context: ./sandbox
+    image: agent-sandbox:latest
+    entrypoint: ["true"]
+    restart: "no"
+
   worker:
     build: .
     env_file: .env
@@ -40,6 +50,10 @@ services:
       - IS_SANDBOX=1
     depends_on:
       - temporal
+      - sandbox-image
+    networks:
+      - default
+      - sandbox-net
     volumes:
       # Persist workdirs across container restarts. The workflow's
       # prepare_workdir activity clones into /tmp/autofix-{workflow_id}/repo
@@ -47,6 +61,10 @@ services:
       # expect the clone to still be there. Without this volume, any restart
       # wipes /tmp and the agent's tool calls fail with ENOENT.
       - worker_tmp:/tmp
+      # Per-workflow sandbox: the worker spawns sibling containers via
+      # the host's docker daemon. Sock mount = worker has root-equivalent
+      # on the host; acceptable for the PoC, NOT for shared infra.
+      - /var/run/docker.sock:/var/run/docker.sock
 
   gateway:
     build: .
@@ -59,6 +77,12 @@ services:
     command: ["uv", "run", "uvicorn", "src.gateway.app:app", "--host", "0.0.0.0", "--port", "8000"]
     ports:
       - "8000:8000"
+
+networks:
+  sandbox-net:
+    driver: bridge
+    # TODO: egress allow-list (github.com, mirror pip). For the PoC the
+    # network is unrestricted; tighten before production rollout.
 
 volumes:
   temporal_pg:

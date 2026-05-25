@@ -13,6 +13,13 @@ from src.activities.lifecycle import (
     post_status,
 )
 from src.activities.agent_iteration import run_agent_iteration
+from src.activities.sandbox import (
+    provision_sandbox,
+    exec_in_sandbox,
+    pause_sandbox,
+    resume_sandbox,
+    teardown_sandbox,
+)
 
 
 async def main() -> None:
@@ -34,6 +41,14 @@ async def main() -> None:
                 cleanup_workdir,
                 post_status,
                 run_agent_iteration,
+                # Per-workflow sandbox activities. Registered but not yet
+                # wired into PRAutofixWorkflow — that integration is the
+                # next step (replace prepare_workdir/cleanup_workdir).
+                provision_sandbox,
+                exec_in_sandbox,
+                pause_sandbox,
+                resume_sandbox,
+                teardown_sandbox,
             ],
             activity_executor=activity_executor,
         ):

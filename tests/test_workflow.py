@@ -5,7 +5,7 @@ from temporalio import activity
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
-from src.models import PRRef, GitHubEvent, WorkflowState, FixPlan
+from src.models import PRRef, GitHubEvent, WorkflowState, FixPlan, SandboxHandle
 from src.workflows.pr_autofix import PRAutofixWorkflow
 
 
@@ -17,6 +17,16 @@ async def stub_prepare(pr: PRRef) -> None:
 
 @activity.defn(name="cleanup_workdir")
 async def stub_cleanup(pr: PRRef) -> None:
+    return None
+
+
+@activity.defn(name="provision_sandbox")
+async def stub_provision_sandbox(pr: PRRef) -> SandboxHandle:
+    return SandboxHandle(container_id="stub-cid", workdir="/tmp/stub/repo")
+
+
+@activity.defn(name="teardown_sandbox")
+async def stub_teardown_sandbox(handle: SandboxHandle) -> None:
     return None
 
 
@@ -54,6 +64,8 @@ async def test_workflow_processes_event_and_returns(env: WorkflowEnvironment):
         activities=[
             stub_prepare,
             stub_cleanup,
+            stub_provision_sandbox,
+            stub_teardown_sandbox,
             stub_post_status,
             stub_run_agent_iteration,
         ],
@@ -71,3 +83,5 @@ async def test_workflow_processes_event_and_returns(env: WorkflowEnvironment):
         state = await handle.query(PRAutofixWorkflow.get_state)
         assert state.iterations == 1
         assert state.posted_status_comment_id == 999
+        assert state.sandbox is not None
+        assert state.sandbox.container_id == "stub-cid"

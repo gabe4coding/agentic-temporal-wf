@@ -112,8 +112,16 @@ async def _run_iteration_impl(
         workflow_id = activity.info().workflow_id
     except Exception:
         workflow_id = "unit-test"
-    from src.tools._workdir import set_workdir_id, reset_workdir_id
+    from src.tools._workdir import (
+        set_workdir_id,
+        reset_workdir_id,
+        set_sandbox_handle,
+        reset_sandbox_handle,
+    )
     workdir_token = set_workdir_id(workflow_id)
+    sandbox_token = None
+    if state.sandbox is not None:
+        sandbox_token = set_sandbox_handle(state.sandbox)
     try:
         prompt = _build_prompt(state, events)
         options = build_options()
@@ -148,6 +156,8 @@ async def _run_iteration_impl(
 
         return _parse_fix_plan(final_text)
     finally:
+        if sandbox_token is not None:
+            reset_sandbox_handle(sandbox_token)
         reset_workdir_id(workdir_token)
 
 

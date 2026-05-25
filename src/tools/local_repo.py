@@ -20,7 +20,10 @@ import json
 from claude_agent_sdk import tool, create_sdk_mcp_server
 
 from src.tools import _local_repo_impl as impl
-from src.tools._workdir import workdir_root_from_env
+from src.tools._workdir import (
+    workdir_root_from_env,
+    get_sandbox_handle,
+)
 
 
 def _text(payload: str | dict) -> dict:
@@ -30,6 +33,17 @@ def _text(payload: str | dict) -> dict:
     else:
         body = json.dumps(payload)
     return {"content": [{"type": "text", "text": body}]}
+
+
+def _exec_target():
+    """Resolve the dispatch target for the 4 command-execution tools.
+
+    Returns the per-workflow SandboxHandle when one is bound to the
+    asyncio task; otherwise falls back to the host workdir path
+    (legacy behavior, kept for tests).
+    """
+    handle = get_sandbox_handle()
+    return handle if handle is not None else workdir_root_from_env()
 
 
 # ---------- read_file ----------
@@ -78,7 +92,7 @@ apply_edit_tool = tool(
 # ---------- run_ruff ----------
 
 async def _run_ruff_impl(args: dict) -> dict:
-    result = impl.run_ruff(workdir_root_from_env())
+    result = impl.run_ruff(_exec_target())
     return _text(result.model_dump())
 
 
@@ -93,7 +107,7 @@ run_ruff_tool = tool(
 
 async def _run_pytest_impl(args: dict) -> dict:
     target = args.get("target") or None
-    result = impl.run_pytest(workdir_root_from_env(), target)
+    result = impl.run_pytest(_exec_target(), target)
     return _text(result.model_dump())
 
 
@@ -107,7 +121,7 @@ run_pytest_tool = tool(
 # ---------- git_status ----------
 
 async def _git_status_impl(args: dict) -> dict:
-    return _text(impl.git_status(workdir_root_from_env()).model_dump())
+    return _text(impl.git_status(_exec_target()).model_dump())
 
 
 git_status_tool = tool(
@@ -120,7 +134,7 @@ git_status_tool = tool(
 # ---------- git_commit_and_push ----------
 
 async def _git_commit_and_push_impl(args: dict) -> dict:
-    result = impl.git_commit_and_push(workdir_root_from_env(), args["message"])
+    result = impl.git_commit_and_push(_exec_target(), args["message"])
     return _text(result.model_dump())
 
 

@@ -17,6 +17,7 @@ with workflow.unsafe.imports_passed_through():
         post_status,
     )
     from src.activities.agent_iteration import run_agent_iteration
+    from src.activities.sandbox import provision_sandbox, teardown_sandbox
 
 
 MAX_ITERATIONS = 5
@@ -52,6 +53,14 @@ class PRAutofixWorkflow:
             prepare_workdir,
             self._state.pr,
             start_to_close_timeout=timedelta(minutes=5),
+        )
+        # Spin the per-workflow sandbox up. It inherits the worker's /tmp
+        # via volumes_from, so the workdir just cloned is visible inside
+        # the sandbox at the same path.
+        self._state.sandbox = await workflow.execute_activity(
+            provision_sandbox,
+            self._state.pr,
+            start_to_close_timeout=timedelta(minutes=2),
         )
         do_cleanup = True
         try:
@@ -104,6 +113,14 @@ class PRAutofixWorkflow:
                     workflow.continue_as_new(self._state)
         finally:
             if do_cleanup:
+                # Tear down the sandbox first, then the host workdir.
+                # Both activities are idempotent on missing resources.
+                if self._state.sandbox is not None:
+                    await workflow.execute_activity(
+                        teardown_sandbox,
+                        self._state.sandbox,
+                        start_to_close_timeout=timedelta(minutes=1),
+                    )
                 await workflow.execute_activity(
                     cleanup_workdir,
                     self._state.pr,

@@ -3,6 +3,19 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
+class SandboxHandle(BaseModel):
+    """Identifies a per-workflow sandbox container. Lives in WorkflowState."""
+
+    container_id: str
+    workdir: str = "/work"
+
+
+class ExecResult(BaseModel):
+    exit_code: int
+    stdout: str = ""
+    stderr: str = ""
+
+
 class PRRef(BaseModel):
     owner: str
     repo: str
@@ -46,3 +59,4 @@ class WorkflowState(BaseModel):
     posted_status_comment_id: int | None = None
     last_check_run_id: int | None = None
     closed: bool = False
+    sandbox: SandboxHandle | None = None

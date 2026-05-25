@@ -6,7 +6,41 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from src.models import SandboxHandle
 from src.tools._workdir import safe_join
+
+
+# ---------- exec dispatch ----------
+#
+# The 4 command-execution functions below (run_ruff, run_pytest,
+# git_status, git_commit_and_push) accept either a `Path` (legacy host
+# filesystem path, kept for the existing unit tests) or a
+# `SandboxHandle` (per-workflow Docker sandbox). The dispatch is by
+# isinstance — explicit and easy to follow at the call site.
+#
+# File-based helpers (read_file, list_files, apply_edit) keep operating
+# on the host filesystem. The hybrid bind-mount design (volumes_from)
+# ensures the same path is visible inside the sandbox, so an edit done
+# on the host is picked up by the next exec_in_sandbox.
+
+Target = Path | SandboxHandle
+
+
+def _exec_at(target: Target, cmd: list[str]) -> tuple[int, str, str]:
+    """Run `cmd` against `target`; returns (exit_code, stdout, stderr)."""
+    if isinstance(target, SandboxHandle):
+        from src.activities.sandbox import _exec_in_sandbox_impl
+
+        res = _exec_in_sandbox_impl(target, cmd)
+        return res.exit_code, res.stdout, res.stderr
+    proc = subprocess.run(
+        cmd, cwd=target, capture_output=True, text=True, check=False
+    )
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+def _workdir_path(target: Target) -> Path:
+    return Path(target.workdir) if isinstance(target, SandboxHandle) else target
 
 
 def read_file(workdir: Path, path: str) -> str:
@@ -50,15 +84,12 @@ class PytestResult(BaseModel):
     summary: str
 
 
-def run_ruff(workdir: Path) -> RuffResult:
-    proc = subprocess.run(
-        ["ruff", "check", ".", "--output-format=json"],
-        cwd=workdir,
-        capture_output=True,
-        text=True,
+def run_ruff(workdir: Target) -> RuffResult:
+    rc, stdout, stderr = _exec_at(
+        workdir, ["ruff", "check", ".", "--output-format=json"]
     )
-    if proc.stdout.strip():
-        raw = json.loads(proc.stdout)
+    if stdout.strip():
+        raw = json.loads(stdout)
         violations = [
             RuffViolation(
                 filename=item["filename"],
@@ -70,21 +101,20 @@ def run_ruff(workdir: Path) -> RuffResult:
         ]
     else:
         violations = []
-    return RuffResult(exit_code=proc.returncode, violations=violations, raw_stderr=proc.stderr)
+    return RuffResult(exit_code=rc, violations=violations, raw_stderr=stderr)
 
 
-def run_pytest(workdir: Path, target: str | None = None) -> PytestResult:
+def run_pytest(workdir: Target, target: str | None = None) -> PytestResult:
     cmd = ["pytest", "-q", "--no-header"]
     if target:
         cmd.append(target)
-    proc = subprocess.run(cmd, cwd=workdir, capture_output=True, text=True)
-    out = proc.stdout
-    passed = _count_token(out, "passed")
-    failed = _count_token(out, "failed")
-    errors = _count_token(out, "error")
-    summary = (out.splitlines() or [""])[-1].strip()
+    rc, stdout, _stderr = _exec_at(workdir, cmd)
+    passed = _count_token(stdout, "passed")
+    failed = _count_token(stdout, "failed")
+    errors = _count_token(stdout, "error")
+    summary = (stdout.splitlines() or [""])[-1].strip()
     return PytestResult(
-        exit_code=proc.returncode,
+        exit_code=rc,
         passed=passed,
         failed=failed,
         errors=errors,
@@ -116,28 +146,29 @@ class CommitResult(BaseModel):
 AUTOFIX_COMMIT_TRAILER = "[autofix-bot]"
 
 
-def _git(workdir: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["git", *args], cwd=workdir, capture_output=True, text=True, check=False
-    )
+def _git(workdir: Target, *args: str) -> tuple[int, str, str]:
+    """Run a git command against workdir; returns (rc, stdout, stderr)."""
+    return _exec_at(workdir, ["git", *args])
 
 
-def git_status(workdir: Path) -> GitStatus:
-    branch = _git(workdir, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
-    porcelain = _git(workdir, "status", "--porcelain").stdout
+def git_status(workdir: Target) -> GitStatus:
+    _, branch_out, _ = _git(workdir, "rev-parse", "--abbrev-ref", "HEAD")
+    branch = branch_out.strip()
+    _, porcelain, _ = _git(workdir, "status", "--porcelain")
     dirty = bool(porcelain.strip())
     return GitStatus(branch=branch, dirty=dirty)
 
 
-def git_commit_and_push(workdir: Path, message: str) -> CommitResult:
-    branch = _git(workdir, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+def git_commit_and_push(workdir: Target, message: str) -> CommitResult:
+    _, branch_out, _ = _git(workdir, "rev-parse", "--abbrev-ref", "HEAD")
+    branch = branch_out.strip()
 
-    add = _git(workdir, "add", "-A")
-    if add.returncode != 0:
-        return CommitResult(pushed=False, reason=add.stderr.strip())
+    add_rc, _, add_err = _git(workdir, "add", "-A")
+    if add_rc != 0:
+        return CommitResult(pushed=False, reason=add_err.strip())
 
-    diff_cached = _git(workdir, "diff", "--cached", "--quiet")
-    if diff_cached.returncode == 0:
+    diff_rc, _, _ = _git(workdir, "diff", "--cached", "--quiet")
+    if diff_rc == 0:
         return CommitResult(pushed=False, reason="no_changes")
 
     # Always tag autofix commits with a stable trailer so the gateway can
@@ -147,23 +178,25 @@ def git_commit_and_push(workdir: Path, message: str) -> CommitResult:
         if AUTOFIX_COMMIT_TRAILER in message
         else f"{message}\n\n{AUTOFIX_COMMIT_TRAILER}"
     )
-    commit = _git(workdir, "commit", "-m", full_message)
-    if commit.returncode != 0:
-        return CommitResult(pushed=False, reason=commit.stderr.strip())
-    sha = _git(workdir, "rev-parse", "HEAD").stdout.strip()
+    commit_rc, _, commit_err = _git(workdir, "commit", "-m", full_message)
+    if commit_rc != 0:
+        return CommitResult(pushed=False, reason=commit_err.strip())
+    _, sha_out, _ = _git(workdir, "rev-parse", "HEAD")
+    sha = sha_out.strip()
 
-    fetch = _git(workdir, "fetch", "origin", branch)
-    if fetch.returncode != 0:
-        return CommitResult(pushed=False, commit_sha=sha, reason=fetch.stderr.strip())
+    fetch_rc, _, fetch_err = _git(workdir, "fetch", "origin", branch)
+    if fetch_rc != 0:
+        return CommitResult(pushed=False, commit_sha=sha, reason=fetch_err.strip())
 
-    behind = _git(
+    _, behind_out, _ = _git(
         workdir, "rev-list", "--count", f"HEAD..origin/{branch}"
-    ).stdout.strip()
+    )
+    behind = behind_out.strip()
     if behind and int(behind) > 0:
         return CommitResult(pushed=False, commit_sha=sha, reason="remote_advanced")
 
-    push = _git(workdir, "push", "origin", branch)
-    if push.returncode != 0:
-        return CommitResult(pushed=False, commit_sha=sha, reason=push.stderr.strip())
+    push_rc, _, push_err = _git(workdir, "push", "origin", branch)
+    if push_rc != 0:
+        return CommitResult(pushed=False, commit_sha=sha, reason=push_err.strip())
 
     return CommitResult(pushed=True, commit_sha=sha)

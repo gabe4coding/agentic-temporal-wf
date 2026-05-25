@@ -14,9 +14,14 @@ import contextvars
 import os
 from pathlib import Path
 
+from src.models import SandboxHandle
+
 
 _workdir_id_var: contextvars.ContextVar[str] = contextvars.ContextVar(
     "autofix_workdir_id"
+)
+_sandbox_handle_var: contextvars.ContextVar[SandboxHandle] = contextvars.ContextVar(
+    "autofix_sandbox_handle"
 )
 
 
@@ -61,3 +66,29 @@ def workdir_root_from_env() -> Path:
     if not wid:
         raise RuntimeError("AUTOFIX_WORKDIR_ID is not set (neither context nor env)")
     return workdir_root(wid)
+
+
+def set_sandbox_handle(handle: SandboxHandle) -> contextvars.Token:
+    """Bind the per-workflow sandbox handle to the current asyncio task.
+
+    Returns a token that must be passed back to reset_sandbox_handle()
+    (typically in a finally block).
+    """
+    return _sandbox_handle_var.set(handle)
+
+
+def reset_sandbox_handle(token: contextvars.Token) -> None:
+    _sandbox_handle_var.reset(token)
+
+
+def get_sandbox_handle() -> SandboxHandle | None:
+    """Return the bound sandbox handle, or None if not set.
+
+    Returning None rather than raising lets the tool layer keep the
+    legacy host-filesystem path when no sandbox is in scope (e.g. in
+    unit tests that exercise _local_repo_impl directly).
+    """
+    try:
+        return _sandbox_handle_var.get()
+    except LookupError:
+        return None

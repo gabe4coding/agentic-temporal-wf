@@ -37,3 +37,14 @@ def test_workflow_state_defaults():
     assert s.processed_delivery_ids == set()
     assert s.processed_comment_ids == set()
     assert s.closed is False
+    assert s.sandbox is None
+
+
+def test_workflow_state_carries_sandbox_handle():
+    from src.models import SandboxHandle
+
+    pr = PRRef(owner="o", repo="r", number=1, head_sha="a", head_ref="b")
+    s = WorkflowState(pr=pr, sandbox=SandboxHandle(container_id="cid", workdir="/work"))
+    s2 = WorkflowState.model_validate_json(s.model_dump_json())
+    assert s2.sandbox is not None
+    assert s2.sandbox.container_id == "cid"
