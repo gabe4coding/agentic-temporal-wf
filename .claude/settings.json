@@ -1,0 +1,6 @@
+{
+  "enabledPlugins": {
+    "temporal@temporal-marketplace": true,
+    "ai@pydantic-skills": true
+  }
+}
