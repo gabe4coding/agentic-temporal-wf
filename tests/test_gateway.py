@@ -20,7 +20,16 @@ def _sign(body: bytes) -> str:
 @pytest.fixture
 def client_and_temporal():
     fake_client = AsyncMock()
-    app = create_app(temporal_client=fake_client, webhook_secret=WEBHOOK_SECRET)
+    # Default fetcher returns "" so the self-trigger guard is a no-op
+    # unless a test wants to exercise it explicitly.
+    async def empty_fetcher(owner: str, repo: str, sha: str) -> str:
+        return ""
+
+    app = create_app(
+        temporal_client=fake_client,
+        webhook_secret=WEBHOOK_SECRET,
+        fetch_commit_message=empty_fetcher,
+    )
     return TestClient(app), fake_client
 
 
@@ -80,6 +89,80 @@ def test_pull_request_opened_starts_workflow(client_and_temporal):
     kwargs = fake.start_workflow.call_args.kwargs
     assert kwargs["id"] == "pr-autofix-o-r-42"
     assert kwargs["start_signal"] == "on_event"
+
+
+def test_pr_synchronize_from_autofix_bot_is_dropped():
+    """Self-trigger guard: synchronize whose head commit message contains
+    the AUTOFIX_COMMIT_TRAILER must not start a new workflow."""
+    fake_client = AsyncMock()
+    from src.tools._local_repo_impl import AUTOFIX_COMMIT_TRAILER
+
+    async def autofix_fetcher(owner: str, repo: str, sha: str) -> str:
+        return f"fix: something\n\n{AUTOFIX_COMMIT_TRAILER}"
+
+    app = create_app(
+        temporal_client=fake_client,
+        webhook_secret=WEBHOOK_SECRET,
+        fetch_commit_message=autofix_fetcher,
+    )
+    client = TestClient(app)
+    payload = {
+        "action": "synchronize",
+        "pull_request": {
+            "number": 7,
+            "head": {"sha": "deadbeef", "ref": "feature-x"},
+            "base": {"repo": {"owner": {"login": "o"}, "name": "r"}},
+        },
+        "repository": {"owner": {"login": "o"}, "name": "r"},
+    }
+    body = json.dumps(payload).encode()
+    r = client.post(
+        "/webhook",
+        headers={
+            "X-GitHub-Event": "pull_request",
+            "X-GitHub-Delivery": "d-self",
+            "X-Hub-Signature-256": _sign(body),
+        },
+        content=body,
+    )
+    assert r.status_code == 204
+    fake_client.start_workflow.assert_not_called()
+
+
+def test_pr_synchronize_from_human_still_starts_workflow():
+    """Self-trigger guard must not drop legitimate human-pushed syncs."""
+    fake_client = AsyncMock()
+
+    async def human_fetcher(owner: str, repo: str, sha: str) -> str:
+        return "fix: real human change"
+
+    app = create_app(
+        temporal_client=fake_client,
+        webhook_secret=WEBHOOK_SECRET,
+        fetch_commit_message=human_fetcher,
+    )
+    client = TestClient(app)
+    payload = {
+        "action": "synchronize",
+        "pull_request": {
+            "number": 7,
+            "head": {"sha": "beefcafe", "ref": "feature-x"},
+            "base": {"repo": {"owner": {"login": "o"}, "name": "r"}},
+        },
+        "repository": {"owner": {"login": "o"}, "name": "r"},
+    }
+    body = json.dumps(payload).encode()
+    r = client.post(
+        "/webhook",
+        headers={
+            "X-GitHub-Event": "pull_request",
+            "X-GitHub-Delivery": "d-human",
+            "X-Hub-Signature-256": _sign(body),
+        },
+        content=body,
+    )
+    assert r.status_code == 202
+    fake_client.start_workflow.assert_awaited_once()
 
 
 def test_issue_comment_on_pr_is_dropped(client_and_temporal):

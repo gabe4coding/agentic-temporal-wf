@@ -111,6 +111,11 @@ class CommitResult(BaseModel):
     reason: str | None = None  # "no_changes" | "remote_advanced" | other
 
 
+# Trailer appended to every autofix commit so the gateway can recognize
+# the push and skip the self-triggered pull_request.synchronize event.
+AUTOFIX_COMMIT_TRAILER = "[autofix-bot]"
+
+
 def _git(workdir: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["git", *args], cwd=workdir, capture_output=True, text=True, check=False
@@ -135,7 +140,14 @@ def git_commit_and_push(workdir: Path, message: str) -> CommitResult:
     if diff_cached.returncode == 0:
         return CommitResult(pushed=False, reason="no_changes")
 
-    commit = _git(workdir, "commit", "-m", message)
+    # Always tag autofix commits with a stable trailer so the gateway can
+    # recognize and drop the resulting pull_request.synchronize event.
+    full_message = (
+        message
+        if AUTOFIX_COMMIT_TRAILER in message
+        else f"{message}\n\n{AUTOFIX_COMMIT_TRAILER}"
+    )
+    commit = _git(workdir, "commit", "-m", full_message)
     if commit.returncode != 0:
         return CommitResult(pushed=False, reason=commit.stderr.strip())
     sha = _git(workdir, "rev-parse", "HEAD").stdout.strip()

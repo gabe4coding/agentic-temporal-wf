@@ -1,13 +1,42 @@
 import hashlib
 import hmac
 import os
-from typing import Any
+from typing import Any, Awaitable, Callable
 
+import httpx
 from fastapi import FastAPI, Header, HTTPException, Request, Response
 from temporalio.common import WorkflowIDReusePolicy
 
 from src.models import GitHubEvent, PRRef
+from src.tools._local_repo_impl import AUTOFIX_COMMIT_TRAILER
 from src.workflows.pr_autofix import PRAutofixWorkflow
+
+
+CommitMessageFetcher = Callable[[str, str, str], Awaitable[str]]
+
+
+async def _fetch_commit_message(owner: str, repo: str, sha: str) -> str:
+    """Default GitHub API fetcher for a commit's full message. Returns ""
+    on any failure (auth missing, 404, network) — callers treat empty as
+    'unable to determine, fall through to normal processing'."""
+    token = os.environ.get("GITHUB_TOKEN")
+    if not token or not sha:
+        return ""
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.get(
+                f"https://api.github.com/repos/{owner}/{repo}/commits/{sha}",
+                headers=headers,
+            )
+            if r.status_code != 200:
+                return ""
+            return r.json().get("commit", {}).get("message", "") or ""
+    except (httpx.HTTPError, ValueError):
+        return ""
 
 
 def _verify(secret: str, body: bytes, signature: str | None) -> bool:
@@ -78,7 +107,11 @@ def _project_event(
 
 
 def create_app(
-    *, temporal_client: Any, webhook_secret: str, task_queue: str = "pr-autofix"
+    *,
+    temporal_client: Any,
+    webhook_secret: str,
+    task_queue: str = "pr-autofix",
+    fetch_commit_message: CommitMessageFetcher = _fetch_commit_message,
 ) -> FastAPI:
     app = FastAPI(title="PR Autofix Gateway")
 
@@ -100,6 +133,17 @@ def create_app(
             return Response(status_code=204)
 
         pr, event = projected
+
+        # Self-trigger guard: a pull_request.synchronize event whose head
+        # commit was authored by the autofix bot itself would otherwise
+        # spawn a fresh workflow that has nothing new to fix and just
+        # posts another "no_action_needed" status. We detect by the
+        # AUTOFIX_COMMIT_TRAILER stamped into the commit message.
+        if event.kind == "pr_synchronize":
+            head_message = await fetch_commit_message(pr.owner, pr.repo, pr.head_sha)
+            if AUTOFIX_COMMIT_TRAILER in head_message:
+                return Response(status_code=204)
+
         wf_id = f"pr-autofix-{pr.owner}-{pr.repo}-{pr.number}"
         await temporal_client.start_workflow(
             PRAutofixWorkflow.run,
