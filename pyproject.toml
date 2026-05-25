@@ -5,13 +5,11 @@ description = "PoC: PR autofix agent on Temporal + Pydantic AI"
 requires-python = ">=3.12"
 dependencies = [
     "temporalio>=1.7.0",
-    "pydantic-ai[mcp,anthropic]>=1.0.0",
+    "claude-agent-sdk>=0.1.0",
     "pydantic>=2.7",
     "fastapi>=0.110",
     "uvicorn[standard]>=0.29",
     "httpx>=0.27",
-    # Invoked by the agent as tools (run_ruff / run_pytest); runtime deps,
-    # not dev-only.
     "pytest>=8.0",
     "ruff>=0.5",
 ]
