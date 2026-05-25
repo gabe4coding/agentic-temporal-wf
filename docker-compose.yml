@@ -1,0 +1,65 @@
+services:
+  temporal:
+    image: temporalio/auto-setup:1.24
+    environment:
+      - DB=postgres12
+      - DB_PORT=5432
+      - POSTGRES_USER=temporal
+      - POSTGRES_PWD=temporal
+      - POSTGRES_SEEDS=postgres
+    depends_on:
+      - postgres
+    ports:
+      - "7233:7233"
+
+  postgres:
+    image: postgres:15
+    environment:
+      - POSTGRES_PASSWORD=temporal
+      - POSTGRES_USER=temporal
+    volumes:
+      - temporal_pg:/var/lib/postgresql/data
+
+  temporal-ui:
+    image: temporalio/ui:2.30.1
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+      - TEMPORAL_CORS_ORIGINS=http://localhost:3000
+    depends_on:
+      - temporal
+    ports:
+      - "8233:8080"
+
+  worker:
+    build: .
+    env_file: .env
+    environment:
+      - TEMPORAL_TARGET=temporal:7233
+      # The claude CLI refuses --dangerously-skip-permissions when run as
+      # root unless this env var is set (it acknowledges we're sandboxed).
+      - IS_SANDBOX=1
+    depends_on:
+      - temporal
+    volumes:
+      # Persist workdirs across container restarts. The workflow's
+      # prepare_workdir activity clones into /tmp/autofix-{workflow_id}/repo
+      # and later tool calls (read_file, run_pytest, git_commit_and_push)
+      # expect the clone to still be there. Without this volume, any restart
+      # wipes /tmp and the agent's tool calls fail with ENOENT.
+      - worker_tmp:/tmp
+
+  gateway:
+    build: .
+    env_file: .env
+    environment:
+      - TEMPORAL_TARGET=temporal:7233
+      - GATEWAY_BOOT=1
+    depends_on:
+      - temporal
+    command: ["uv", "run", "uvicorn", "src.gateway.app:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "8000:8000"
+
+volumes:
+  temporal_pg:
+  worker_tmp:

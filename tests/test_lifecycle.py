@@ -1,0 +1,107 @@
+import os
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+
+from src.activities.lifecycle import (
+    _prepare_workdir_at,
+    _cleanup_workdir_at,
+)
+from src.models import PRRef
+
+
+def test_prepare_workdir_clones_when_missing(tmp_path: Path, tmp_repo_with_remote: Path):
+    target = tmp_path / "autofix-wf1" / "repo"
+    remote_url = str(tmp_repo_with_remote.parent / "remote.git")
+    _prepare_workdir_at(
+        target=target,
+        clone_url=remote_url,
+        head_ref="main",
+        head_sha="HEAD",
+    )
+    assert (target / ".git").is_dir()
+    assert (target / "hello.py").exists()
+
+
+def test_prepare_workdir_is_idempotent(tmp_path: Path, tmp_repo_with_remote: Path):
+    target = tmp_path / "autofix-wf1" / "repo"
+    remote_url = str(tmp_repo_with_remote.parent / "remote.git")
+    for _ in range(2):
+        _prepare_workdir_at(
+            target=target,
+            clone_url=remote_url,
+            head_ref="main",
+            head_sha="HEAD",
+        )
+    assert (target / "hello.py").exists()
+
+
+def test_cleanup_workdir_removes_tree(tmp_path: Path):
+    target = tmp_path / "autofix-wf1"
+    (target / "repo").mkdir(parents=True)
+    (target / "repo" / "junk.txt").write_text("x")
+    _cleanup_workdir_at(target)
+    assert not target.exists()
+
+
+def test_prepare_workdir_uses_head_ref_as_local_branch(tmp_path: Path, tmp_repo_with_remote: Path):
+    target = tmp_path / "autofix-wf1" / "repo"
+    remote_url = str(tmp_repo_with_remote.parent / "remote.git")
+    _prepare_workdir_at(
+        target=target,
+        clone_url=remote_url,
+        head_ref="main",
+        head_sha="HEAD",
+    )
+    import subprocess
+    out = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=target, capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    assert out == "main"
+
+
+def test_prepare_workdir_wipes_dirty_local_edits(tmp_path: Path, tmp_repo_with_remote: Path):
+    """Second prepare_workdir_at on the same workdir must wipe local edits
+    from a previous iteration so the checkout doesn't refuse."""
+    target = tmp_path / "autofix-wf1" / "repo"
+    remote_url = str(tmp_repo_with_remote.parent / "remote.git")
+    _prepare_workdir_at(
+        target=target,
+        clone_url=remote_url,
+        head_ref="main",
+        head_sha="HEAD",
+    )
+    # Simulate an uncommitted edit left by a previous iteration.
+    (target / "hello.py").write_text("agent edits never committed\n")
+    # Second call: must succeed and reset the file.
+    _prepare_workdir_at(
+        target=target,
+        clone_url=remote_url,
+        head_ref="main",
+        head_sha="HEAD",
+    )
+    assert (target / "hello.py").read_text().startswith("def hello()")
+
+
+def test_prepare_workdir_sets_repo_local_bot_identity(tmp_path: Path, tmp_repo_with_remote: Path):
+    target = tmp_path / "autofix-wf1" / "repo"
+    remote_url = str(tmp_repo_with_remote.parent / "remote.git")
+    _prepare_workdir_at(
+        target=target,
+        clone_url=remote_url,
+        head_ref="main",
+        head_sha="HEAD",
+    )
+    import subprocess
+    name = subprocess.run(
+        ["git", "config", "user.name"],
+        cwd=target, capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    email = subprocess.run(
+        ["git", "config", "user.email"],
+        cwd=target, capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    assert name == "Claude"
+    assert email == "noreply@anthropic.com"
