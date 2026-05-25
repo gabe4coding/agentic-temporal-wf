@@ -1,7 +1,7 @@
 [project]
 name = "agent-temporal"
 version = "0.1.0"
-description = "PoC: PR autofix agent on Temporal + Pydantic AI"
+description = "PoC: PR autofix agent on Temporal + Claude Agent SDK"
 requires-python = ">=3.12"
 dependencies = [
     "temporalio>=1.7.0",

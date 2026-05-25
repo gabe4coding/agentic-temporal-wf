@@ -1,6 +1,6 @@
 # agent-temporal — PR Autofix PoC
 
-PoC of an agentic workflow on **Temporal + Pydantic AI** that auto-fixes
+PoC of an agentic workflow on **Temporal + Claude Agent SDK** that auto-fixes
 GitHub Pull Requests (review comments, lint, tests).
 
 See [design doc](docs/superpowers/specs/2026-05-25-temporal-pydantic-pr-autofix-design.md).

@@ -1,5 +1,23 @@
+"""Workdir path resolution helpers for the autofix toolset.
+
+The per-workflow workdir is `/tmp/autofix-{workflow_id}/repo`. SDK MCP
+tools receive a dict of args (no RunContext equivalent), so the workflow
+activity communicates the workdir id via a ContextVar that is isolated
+per-asyncio-task — safe across concurrent activities on the same worker.
+
+The env-var `AUTOFIX_WORKDIR_ID` is kept as a fallback so unit tests that
+monkeypatch the env continue to work. In production the ContextVar wins.
+"""
+from __future__ import annotations
+
+import contextvars
 import os
 from pathlib import Path
+
+
+_workdir_id_var: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "autofix_workdir_id"
+)
 
 
 def workdir_root(workdir_id: str) -> Path:
@@ -16,14 +34,30 @@ def safe_join(workdir: Path, relative: str) -> Path:
     return candidate
 
 
-def workdir_root_from_env() -> Path:
-    """Resolve workdir using the AUTOFIX_WORKDIR_ID env var.
+def set_workdir_id(workdir_id: str) -> contextvars.Token:
+    """Bind the workdir id for the current asyncio task. Returns a token
+    that must be passed back to reset_workdir_id() (typically in a
+    finally block)."""
+    return _workdir_id_var.set(workdir_id)
 
-    Set by the Temporal activity (run_agent_iteration) so SDK MCP tools,
-    which receive a plain dict of args and have no RunContext equivalent,
-    can still locate the per-workflow workdir.
+
+def reset_workdir_id(token: contextvars.Token) -> None:
+    """Pop the workdir id binding."""
+    _workdir_id_var.reset(token)
+
+
+def workdir_root_from_env() -> Path:
+    """Resolve workdir from the ContextVar first; fall back to the env var.
+
+    The ContextVar is set by the Temporal activity (run_agent_iteration)
+    via set_workdir_id() and isolated per-asyncio-task. The env-var
+    fallback exists so tests can monkeypatch.setenv("AUTOFIX_WORKDIR_ID",
+    ...) and still resolve.
     """
-    wid = os.environ.get("AUTOFIX_WORKDIR_ID")
+    try:
+        wid = _workdir_id_var.get()
+    except LookupError:
+        wid = os.environ.get("AUTOFIX_WORKDIR_ID")
     if not wid:
-        raise RuntimeError("AUTOFIX_WORKDIR_ID env var is not set")
+        raise RuntimeError("AUTOFIX_WORKDIR_ID is not set (neither context nor env)")
     return workdir_root(wid)

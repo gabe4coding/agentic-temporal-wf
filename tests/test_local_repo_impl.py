@@ -138,3 +138,16 @@ def test_workdir_root_from_env_raises_when_unset(monkeypatch):
     monkeypatch.delenv("AUTOFIX_WORKDIR_ID", raising=False)
     with _pytest_for_workdir_env.raises(RuntimeError, match="AUTOFIX_WORKDIR_ID"):
         workdir_root_from_env()
+
+
+def test_workdir_root_from_env_prefers_contextvar(monkeypatch):
+    """ContextVar wins over the env-var fallback."""
+    from src.tools._workdir import set_workdir_id, reset_workdir_id
+
+    monkeypatch.setenv("AUTOFIX_WORKDIR_ID", "from-env")
+    tok = set_workdir_id("from-context")
+    try:
+        p = workdir_root_from_env()
+        assert str(p) == "/tmp/autofix-from-context/repo"
+    finally:
+        reset_workdir_id(tok)

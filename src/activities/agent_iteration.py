@@ -18,9 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json  # noqa: F401  (kept for explicitness; FixPlan uses model_validate_json)
 import logging
-import os
 import re
 
 from claude_agent_sdk import (
@@ -94,7 +92,7 @@ async def _heartbeat_loop(stop: asyncio.Event, counter: dict) -> None:
     while not stop.is_set():
         try:
             activity.heartbeat(counter)
-        except Exception:
+        except RuntimeError:
             # Outside an activity (e.g., unit test) — nothing to heartbeat to.
             pass
         try:
@@ -114,40 +112,43 @@ async def _run_iteration_impl(
         workflow_id = activity.info().workflow_id
     except Exception:
         workflow_id = "unit-test"
-    os.environ["AUTOFIX_WORKDIR_ID"] = workflow_id
-
-    prompt = _build_prompt(state, events)
-    options = build_options()
-
-    counter: dict = {"assistant_messages": 0, "tool_calls": 0}
-    stop = asyncio.Event()
-    hb_task = asyncio.create_task(_heartbeat_loop(stop, counter))
-
-    final_text: str = ""
+    from src.tools._workdir import set_workdir_id, reset_workdir_id
+    workdir_token = set_workdir_id(workflow_id)
     try:
-        async for msg in query(prompt=prompt, options=options):
-            if isinstance(msg, AssistantMessage):
-                counter["assistant_messages"] += 1
-                # Best-effort tool-call counter from the message's blocks
-                blocks = getattr(msg, "content", None) or []
-                for blk in blocks:
-                    if getattr(blk, "type", None) == "tool_use":
-                        counter["tool_calls"] += 1
-            elif isinstance(msg, ResultMessage):
-                if getattr(msg, "subtype", None) == "success":
-                    final_text = getattr(msg, "result", "") or ""
-                else:
-                    return FixPlan(
-                        action="blocked",
-                        summary="Agent terminated abnormally.",
-                        blocking_reason=f"ResultMessage.subtype={msg.subtype}",
-                    )
-    finally:
-        stop.set()
-        with contextlib.suppress(Exception):
-            await hb_task
+        prompt = _build_prompt(state, events)
+        options = build_options()
 
-    return _parse_fix_plan(final_text)
+        counter: dict = {"assistant_messages": 0, "tool_calls": 0}
+        stop = asyncio.Event()
+        hb_task = asyncio.create_task(_heartbeat_loop(stop, counter))
+
+        final_text: str = ""
+        try:
+            async for msg in query(prompt=prompt, options=options):
+                if isinstance(msg, AssistantMessage):
+                    counter["assistant_messages"] += 1
+                    # Best-effort tool-call counter from the message's blocks
+                    blocks = getattr(msg, "content", None) or []
+                    for blk in blocks:
+                        if getattr(blk, "type", None) == "tool_use":
+                            counter["tool_calls"] += 1
+                elif isinstance(msg, ResultMessage):
+                    if getattr(msg, "subtype", None) == "success":
+                        final_text = getattr(msg, "result", "") or ""
+                    else:
+                        return FixPlan(
+                            action="blocked",
+                            summary="Agent terminated abnormally.",
+                            blocking_reason=f"ResultMessage.subtype={msg.subtype}",
+                        )
+        finally:
+            stop.set()
+            with contextlib.suppress(Exception):
+                await hb_task
+
+        return _parse_fix_plan(final_text)
+    finally:
+        reset_workdir_id(workdir_token)
 
 
 @activity.defn
