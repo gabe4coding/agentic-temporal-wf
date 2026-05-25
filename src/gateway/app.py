@@ -39,14 +39,11 @@ def _project_event(
             issue = payload.get("issue", {})
             if "pull_request" not in issue:
                 return None
-            kind = "issue_comment"
-            pr = PRRef(
-                owner=payload["repository"]["owner"]["login"],
-                repo=payload["repository"]["name"],
-                number=issue["number"],
-                head_sha=payload.get("pull_request", {}).get("head", {}).get("sha", ""),
-                head_ref=payload.get("pull_request", {}).get("head", {}).get("ref", ""),
-            )
+            # GitHub's issue_comment payload does not include the PR head SHA/ref.
+            # For the PoC we drop these events at the gateway and rely on
+            # pull_request.synchronize to (re)deliver the head info. The agent will
+            # also re-read PR state via the GitHub MCP toolset on each iteration.
+            return None
         elif event == "pull_request_review_comment":
             pr_node = payload.get("pull_request", {})
             kind = "review_comment"

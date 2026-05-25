@@ -78,12 +78,22 @@ class PRAutofixWorkflow(PydanticAIWorkflow):
                     workdir_id=workflow.info().workflow_id,
                     pr=self._state.pr,
                 )
-                result = await temporal_agent.run(
-                    self._build_prompt(events_snapshot),
-                    deps=deps,
-                )
-                plan: FixPlan = result.output
-                self._apply_plan(plan)
+                try:
+                    result = await temporal_agent.run(
+                        self._build_prompt(events_snapshot),
+                        deps=deps,
+                    )
+                    plan: FixPlan = result.output
+                    self._apply_plan(plan)
+                except Exception as exc:
+                    # Spec §7/§10: post status even when the agent raises.
+                    # Synthesize a blocked plan so post_status can report the failure.
+                    plan = FixPlan(
+                        action="blocked",
+                        summary="Agent iteration failed.",
+                        blocking_reason=f"{type(exc).__name__}: {exc}",
+                    )
+                    self._state.closed = True  # don't try again automatically
 
                 self._state = await workflow.execute_activity(
                     post_status,

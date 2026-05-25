@@ -43,3 +43,20 @@ def test_cleanup_workdir_removes_tree(tmp_path: Path):
     (target / "repo" / "junk.txt").write_text("x")
     _cleanup_workdir_at(target)
     assert not target.exists()
+
+
+def test_prepare_workdir_uses_head_ref_as_local_branch(tmp_path: Path, tmp_repo_with_remote: Path):
+    target = tmp_path / "autofix-wf1" / "repo"
+    remote_url = str(tmp_repo_with_remote.parent / "remote.git")
+    _prepare_workdir_at(
+        target=target,
+        clone_url=remote_url,
+        head_ref="main",
+        head_sha="HEAD",
+    )
+    import subprocess
+    out = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=target, capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    assert out == "main"

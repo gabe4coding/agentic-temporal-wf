@@ -23,7 +23,7 @@ def _prepare_workdir_at(
         target.mkdir(exist_ok=True)
         _run(["git", "clone", "--depth=50", clone_url, "."], target)
     _run(["git", "fetch", "origin", head_ref], target)
-    _run(["git", "checkout", "-B", "autofix", "FETCH_HEAD"], target)
+    _run(["git", "checkout", "-B", head_ref, "FETCH_HEAD"], target)
 
 
 def _cleanup_workdir_at(workdir_parent: Path) -> None:

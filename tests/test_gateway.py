@@ -80,3 +80,29 @@ def test_pull_request_opened_starts_workflow(client_and_temporal):
     kwargs = fake.start_workflow.call_args.kwargs
     assert kwargs["id"] == "pr-autofix-o-r-42"
     assert kwargs["start_signal"] == "on_event"
+
+
+def test_issue_comment_on_pr_is_dropped(client_and_temporal):
+    """PoC limitation: issue_comment payload doesn't include head SHA, drop it."""
+    client, fake = client_and_temporal
+    payload = {
+        "action": "created",
+        "issue": {"number": 7, "pull_request": {"url": "..."}},
+        "comment": {"body": "please fix"},
+        "repository": {"owner": {"login": "o"}, "name": "r"},
+    }
+    import json
+    body = json.dumps(payload).encode()
+    import hmac, hashlib
+    sig = "sha256=" + hmac.new(b"shh", body, hashlib.sha256).hexdigest()
+    r = client.post(
+        "/webhook",
+        headers={
+            "X-GitHub-Event": "issue_comment",
+            "X-GitHub-Delivery": "d",
+            "X-Hub-Signature-256": sig,
+        },
+        content=body,
+    )
+    assert r.status_code == 204
+    fake.start_workflow.assert_not_called()
