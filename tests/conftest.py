@@ -1,7 +1,11 @@
+import os
 import subprocess
 from pathlib import Path
 
 import pytest
+
+os.environ.setdefault("GITHUB_TOKEN", "test-token")
+os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
 
 
 def _run(cmd: list[str], cwd: Path) -> None:
