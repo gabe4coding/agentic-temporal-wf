@@ -37,6 +37,13 @@ services:
       - TEMPORAL_TARGET=temporal:7233
     depends_on:
       - temporal
+    volumes:
+      # Persist workdirs across container restarts. The workflow's
+      # prepare_workdir activity clones into /tmp/autofix-{workflow_id}/repo
+      # and later tool calls (read_file, run_pytest, git_commit_and_push)
+      # expect the clone to still be there. Without this volume, any restart
+      # wipes /tmp and the agent's tool calls fail with ENOENT.
+      - worker_tmp:/tmp
 
   gateway:
     build: .
@@ -52,3 +59,4 @@ services:
 
 volumes:
   temporal_pg:
+  worker_tmp:
