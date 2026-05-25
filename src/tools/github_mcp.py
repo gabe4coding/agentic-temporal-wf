@@ -9,8 +9,8 @@ def build_github_mcp_server() -> MCPServerStdio:
     if not token:
         raise RuntimeError("GITHUB_TOKEN is not set")
     return MCPServerStdio(
-        "npx",
-        args=["-y", "@github/github-mcp-server"],
+        "github-mcp-server",
+        args=["stdio"],
         env={"GITHUB_PERSONAL_ACCESS_TOKEN": token},
         id="github",
         timeout=15,
