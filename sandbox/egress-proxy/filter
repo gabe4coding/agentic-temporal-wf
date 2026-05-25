@@ -1,0 +1,13 @@
+# Egress allow-list — regex matched against the request's hostname.
+# Each line is a Python-flavored regex. Anchored with ^...$ to avoid
+# accidental matches on subdomain segments (`evil-github.com` etc.).
+#
+# To add a new destination, list it here AND have it reviewed in a PR —
+# this file is the L0 network egress policy.
+^github\.com$
+^.+\.github\.com$
+^.+\.githubusercontent\.com$
+^api\.anthropic\.com$
+# PyPI mirrors (used by ruff/pytest cache misses; safe defaults)
+^pypi\.org$
+^files\.pythonhosted\.org$

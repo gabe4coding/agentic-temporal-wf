@@ -130,6 +130,49 @@ def test_provision_sandbox_inherits_worker_mounts_via_volumes_from(
     assert kwargs["volumes_from"] == ["worker-container-name"]
 
 
+def test_provision_sandbox_injects_egress_proxy_env(
+    fake_docker, monkeypatch: pytest.MonkeyPatch
+):
+    """When SANDBOX_EGRESS_PROXY_URL is set, the sandbox container must
+    receive HTTP_PROXY/HTTPS_PROXY so git/curl/pip route through the
+    FQDN-filtering forward proxy on the internal sandbox-net."""
+    from src.activities.sandbox import _provision_sandbox_impl
+
+    monkeypatch.setenv("SANDBOX_EGRESS_PROXY_URL", "http://egress-proxy:8888")
+
+    _provision_sandbox_impl(
+        workflow_id="wf-2", host_workdir="/tmp/autofix-wf-2/repo"
+    )
+
+    _, kwargs = fake_docker.containers.run_calls[0]
+    env = kwargs["environment"]
+    assert env["HTTPS_PROXY"] == "http://egress-proxy:8888"
+    assert env["HTTP_PROXY"] == "http://egress-proxy:8888"
+    # Lowercase variants too — many tools only honor those.
+    assert env["https_proxy"] == "http://egress-proxy:8888"
+    # NO_PROXY must keep the proxy itself reachable (avoid a recursion loop)
+    # plus loopback.
+    assert "egress-proxy" in env["NO_PROXY"]
+    assert "127.0.0.1" in env["NO_PROXY"]
+
+
+def test_provision_sandbox_omits_proxy_env_when_unset(
+    fake_docker, monkeypatch: pytest.MonkeyPatch
+):
+    """Without SANDBOX_EGRESS_PROXY_URL the container starts without proxy
+    env — useful for local smoke tests that don't bring up the proxy."""
+    from src.activities.sandbox import _provision_sandbox_impl
+
+    monkeypatch.delenv("SANDBOX_EGRESS_PROXY_URL", raising=False)
+
+    _provision_sandbox_impl(
+        workflow_id="wf-3", host_workdir="/tmp/autofix-wf-3/repo"
+    )
+
+    _, kwargs = fake_docker.containers.run_calls[0]
+    assert "environment" not in kwargs
+
+
 def test_provision_sandbox_does_not_clone_or_fetch(fake_docker):
     """v2: the host workdir is already prepared by prepare_workdir.
     The sandbox just runs `sleep infinity` and exec'd commands operate

@@ -40,6 +40,19 @@ services:
     entrypoint: ["true"]
     restart: "no"
 
+  egress-proxy:
+    # Forward-only proxy bridging the internal sandbox-net to the
+    # outside. Enforces an explicit FQDN allow-list (see
+    # sandbox/egress-proxy/filter). Sandbox containers reach the outside
+    # only via this hop; everything else is dropped at the network layer.
+    build:
+      context: ./sandbox/egress-proxy
+    image: agent-sandbox-egress-proxy:latest
+    networks:
+      - sandbox-net   # internal-only side, where sandbox containers reach it
+      - default       # outbound side (has NAT to the host)
+    restart: unless-stopped
+
   worker:
     build: .
     env_file: .env
@@ -51,12 +64,15 @@ services:
       # The sandbox-net network is project-prefixed by docker-compose;
       # pass the resolved name so provision_sandbox can attach to it.
       - SANDBOX_NETWORK_NAME=${COMPOSE_PROJECT_NAME:-agent-temporal}_sandbox-net
+      # URL of the egress proxy on sandbox-net. provision_sandbox injects
+      # this into the sandbox container's HTTP_PROXY/HTTPS_PROXY env.
+      - SANDBOX_EGRESS_PROXY_URL=http://egress-proxy:8888
     depends_on:
       - temporal
       - sandbox-image
+      - egress-proxy
     networks:
       - default
-      - sandbox-net
     volumes:
       # Persist workdirs across container restarts. The workflow's
       # prepare_workdir activity clones into /tmp/autofix-{workflow_id}/repo
@@ -84,8 +100,10 @@ services:
 networks:
   sandbox-net:
     driver: bridge
-    # TODO: egress allow-list (github.com, mirror pip). For the PoC the
-    # network is unrestricted; tighten before production rollout.
+    # Internal-only: containers on this network have NO direct route to
+    # the outside. Egress goes through the egress-proxy service, which
+    # enforces an FQDN allow-list (sandbox/egress-proxy/filter).
+    internal: true
 
 volumes:
   temporal_pg:

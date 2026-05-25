@@ -23,6 +23,10 @@ dev = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "integration: tests that require a live Docker daemon and the agent-sandbox image (deselect with '-m \"not integration\"')",
+]
+addopts = "-m 'not integration'"
 
 [tool.ruff]
 line-length = 100

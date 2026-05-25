@@ -99,6 +99,19 @@ def _provision_sandbox_impl(
     sandbox_network = _os.environ.get("SANDBOX_NETWORK_NAME")
     if sandbox_network:
         run_kwargs["network"] = sandbox_network
+    # Force outbound traffic through the egress-proxy on sandbox-net.
+    # The proxy enforces an FQDN allow-list. Setting HTTP_PROXY +
+    # HTTPS_PROXY covers git, curl/pip via libcurl, and httpx by default.
+    egress_proxy = _os.environ.get("SANDBOX_EGRESS_PROXY_URL")
+    if egress_proxy:
+        run_kwargs["environment"] = {
+            "HTTP_PROXY": egress_proxy,
+            "HTTPS_PROXY": egress_proxy,
+            "http_proxy": egress_proxy,
+            "https_proxy": egress_proxy,
+            "NO_PROXY": "localhost,127.0.0.1,egress-proxy",
+            "no_proxy": "localhost,127.0.0.1,egress-proxy",
+        }
     if worker_hostname:
         run_kwargs["volumes_from"] = [worker_hostname]
     container = client.containers.run(SANDBOX_IMAGE, **run_kwargs)
