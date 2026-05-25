@@ -35,6 +35,9 @@ services:
     env_file: .env
     environment:
       - TEMPORAL_TARGET=temporal:7233
+      # The claude CLI refuses --dangerously-skip-permissions when run as
+      # root unless this env var is set (it acknowledges we're sandboxed).
+      - IS_SANDBOX=1
     depends_on:
       - temporal
     volumes:

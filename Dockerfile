@@ -3,10 +3,15 @@ FROM python:3.12-slim
 ARG TARGETARCH
 ARG GITHUB_MCP_VERSION=v1.0.5
 
-# System deps: git (for clone/push), curl + ca-certificates (binary download)
+# System deps: git (clone/push), curl + ca (binary download), node (claude CLI)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git curl ca-certificates \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
+
+# Claude Code CLI — the claude-agent-sdk Python package shells out to this.
+RUN npm install -g @anthropic-ai/claude-code
 
 # Install the official GitHub MCP server (Go binary)
 RUN case "${TARGETARCH:-amd64}" in \
