@@ -1,4 +1,5 @@
 import asyncio
+import concurrent.futures
 import logging
 import os
 
@@ -21,14 +22,18 @@ async def main() -> None:
         plugins=[PydanticAIPlugin()],
     )
     task_queue = os.environ.get("TEMPORAL_TASK_QUEUE", "pr-autofix")
-    async with Worker(
-        client,
-        task_queue=task_queue,
-        workflows=[PRAutofixWorkflow],
-        activities=[prepare_workdir, cleanup_workdir, post_status],
-    ):
-        logging.info("worker listening on task queue %s", task_queue)
-        await asyncio.Event().wait()
+    # prepare_workdir and cleanup_workdir are sync activities — Temporal requires
+    # an explicit executor for those. post_status is async and routes through asyncio.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as activity_executor:
+        async with Worker(
+            client,
+            task_queue=task_queue,
+            workflows=[PRAutofixWorkflow],
+            activities=[prepare_workdir, cleanup_workdir, post_status],
+            activity_executor=activity_executor,
+        ):
+            logging.info("worker listening on task queue %s", task_queue)
+            await asyncio.Event().wait()
 
 
 if __name__ == "__main__":
