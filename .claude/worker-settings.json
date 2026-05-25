@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Read|Edit|MultiEdit|Write|Grep|Glob|Bash|WebFetch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /app/.claude/hooks/restrict_paths.py",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
