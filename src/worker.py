@@ -24,6 +24,13 @@ from src.activities.approval import notify_human_for_approval
 from src.observability.otel import setup_otel
 
 
+def _build_id() -> str:
+    """Worker Versioning (Replay 2026 GA): pin in-flight Workflows to
+    the worker version that started them. Falls back to 'dev' so local
+    runs don't need extra env. CI sets WORKER_BUILD_ID=$GITHUB_SHA."""
+    return os.environ.get("WORKER_BUILD_ID", "dev")
+
+
 def _data_converter():
     """Pattern-C: route Temporal payloads >10 KB to S3 if AWS_S3_BUCKET
     is set. Documented pattern is `dataclasses.replace()` on the default
@@ -77,8 +84,13 @@ async def main() -> None:
                 notify_human_for_approval,
             ],
             activity_executor=activity_executor,
+            build_id=_build_id(),
+            use_worker_versioning=True,
         ):
-            logging.info("worker listening on task queue %s", task_queue)
+            logging.info(
+                "worker listening on task queue %s build_id=%s",
+                task_queue, _build_id(),
+            )
             await asyncio.Event().wait()
 
 

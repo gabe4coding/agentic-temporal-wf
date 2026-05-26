@@ -67,6 +67,9 @@ services:
       # CVE-2026-21852 mitigation: pin API base URL.
       - ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL:-https://api.anthropic.com}
       - ALLOWED_REPOS=${ALLOWED_REPOS}
+      # Pattern-C Worker Versioning: pin in-flight Workflows to the
+      # worker version that started them. CI sets $GITHUB_SHA.
+      - WORKER_BUILD_ID=${WORKER_BUILD_ID:-dev}
     depends_on:
       - temporal
       - sandbox-image
