@@ -21,10 +21,15 @@ from src.activities.sandbox import (
     teardown_sandbox,
 )
 from src.activities.approval import notify_human_for_approval
+from src.observability.otel import setup_otel
 
 
 async def main() -> None:
     logging.basicConfig(level=logging.INFO)
+    # Boot OTel before the Worker so Anthropic / Claude Agent SDK calls
+    # made by the activities are auto-instrumented (Pattern-C
+    # observability — feeds Arize via OpenInference).
+    setup_otel(os.environ.get("ARIZE_PROJECT", "agent-temporal-dev"))
     client = await Client.connect(
         os.environ.get("TEMPORAL_TARGET", "localhost:7233"),
     )

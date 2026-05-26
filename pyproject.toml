@@ -13,6 +13,14 @@ dependencies = [
     "pytest>=8.0",
     "ruff>=0.5",
     "docker>=7.0",
+    # Pattern-C observability: openinference-instrumentation-claude-agent-sdk
+    # captures both query() calls and ClaudeSDKClient sessions as AGENT
+    # spans, with tool calls as child TOOL spans — closer to what Arize
+    # expects than the raw Anthropic instrumentor.
+    "openinference-instrumentation-claude-agent-sdk>=0.1",
+    "opentelemetry-sdk>=1.25",
+    "opentelemetry-exporter-otlp>=1.25",
+    "arize-otel>=0.7",
 ]
 
 [project.optional-dependencies]
