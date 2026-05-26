@@ -33,6 +33,11 @@ def client_and_temporal():
     return TestClient(app), fake_client
 
 
+@pytest.fixture(autouse=True)
+def _default_allowlist(monkeypatch):
+    monkeypatch.setenv("ALLOWED_REPOS", "o/r")
+
+
 def test_rejects_bad_signature(client_and_temporal):
     client, _ = client_and_temporal
     r = client.post(
@@ -189,3 +194,37 @@ def test_issue_comment_on_pr_is_dropped(client_and_temporal):
     )
     assert r.status_code == 204
     fake.start_workflow.assert_not_called()
+
+
+def _sig(secret: str, body: bytes) -> str:
+    return "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+
+
+def test_gateway_rejects_non_allowlisted_repo(monkeypatch):
+    monkeypatch.setenv("ALLOWED_REPOS", "lafourchette/playground")
+
+    class FakeClient:
+        async def start_workflow(self, *a, **kw):  # pragma: no cover
+            raise AssertionError("workflow must not start for denied repo")
+
+    app = create_app(temporal_client=FakeClient(), webhook_secret="s")
+    payload = {
+        "action": "opened",
+        "pull_request": {
+            "number": 1,
+            "head": {"sha": "deadbeef", "ref": "feature"},
+        },
+        "repository": {"owner": {"login": "evil"}, "name": "thirdparty"},
+    }
+    body = json.dumps(payload).encode()
+    r = TestClient(app).post(
+        "/webhook",
+        content=body,
+        headers={
+            "X-GitHub-Event": "pull_request",
+            "X-GitHub-Delivery": "d-1",
+            "X-Hub-Signature-256": _sig("s", body),
+        },
+    )
+    assert r.status_code == 403
+    assert "not in allowlist" in r.text

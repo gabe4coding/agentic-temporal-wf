@@ -8,6 +8,7 @@ from fastapi import FastAPI, Header, HTTPException, Request, Response
 from temporalio.common import WorkflowIDReusePolicy
 
 from src.models import GitHubEvent, PRRef
+from src.repo_allowlist import RepoAllowlist, RepoDenied
 from src.tools._local_repo_impl import AUTOFIX_COMMIT_TRAILER
 from src.workflows.pr_autofix import PRAutofixWorkflow
 
@@ -133,6 +134,11 @@ def create_app(
             return Response(status_code=204)
 
         pr, event = projected
+
+        try:
+            RepoAllowlist.from_env().check(pr.owner, pr.repo)
+        except RepoDenied as e:
+            raise HTTPException(status_code=403, detail=str(e))
 
         # Self-trigger guard: a pull_request.synchronize event whose head
         # commit was authored by the autofix bot itself would otherwise
