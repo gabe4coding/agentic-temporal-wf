@@ -25,8 +25,8 @@ class RepoAllowlist:
         items = [s.strip() for s in raw.split(",") if s.strip()]
         return cls(frozenset(items))
 
-    def __init__(self, repos):
-        object.__setattr__(self, "repos", frozenset(repos))
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "repos", frozenset(self.repos))
 
     def check(self, owner: str, repo: str) -> None:
         slug = f"{owner}/{repo}"
