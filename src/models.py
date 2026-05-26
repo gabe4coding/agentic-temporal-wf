@@ -10,6 +10,19 @@ class SandboxHandle(BaseModel):
     workdir: str = "/work"
 
 
+class SnapshotRef(BaseModel):
+    """Reference to a sandbox snapshot.
+
+    For the PoC the snapshot is a local Docker image tag. Production
+    target stores the layered image in S3 (`s3_bucket` / `s3_key`
+    populated by Phase 9.2 follow-up); see Open Question #3 for cost."""
+
+    image_tag: str
+    iteration: int
+    s3_bucket: str | None = None
+    s3_key: str | None = None
+
+
 class ExecResult(BaseModel):
     exit_code: int
     stdout: str = ""

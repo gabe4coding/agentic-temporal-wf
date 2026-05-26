@@ -21,6 +21,7 @@ from src.activities.sandbox import (
     teardown_sandbox,
 )
 from src.activities.approval import notify_human_for_approval
+from src.activities.snapshot import snapshot_sandbox, restore_sandbox
 from src.observability.otel import setup_otel
 
 
@@ -82,6 +83,8 @@ async def main() -> None:
                 resume_sandbox,
                 teardown_sandbox,
                 notify_human_for_approval,
+                snapshot_sandbox,
+                restore_sandbox,
             ],
             activity_executor=activity_executor,
             build_id=_build_id(),
