@@ -18,11 +18,17 @@ Phase 4.2).
 """
 from __future__ import annotations
 
+import logging
 import os
+import re
+import uuid
 from dataclasses import dataclass
 from typing import Iterable
 
 from fastapi import FastAPI, HTTPException, Request
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -45,6 +51,64 @@ def _injection_for(
     return {}
 
 
+# ---------- HITL gate (Pattern-C rule 7) ----------
+#
+# Routes that change real state and therefore require a human approval
+# before the proxy forwards them. Patterns are matched against
+# {method} {host}{path}. Keep the list tight — every entry is one human
+# interrupt per call.
+_GATED_ROUTES: list[re.Pattern[str]] = [
+    # GitHub: pushing to a ref, deleting a ref, creating a release.
+    re.compile(r"^POST api\.github\.com/repos/[^/]+/[^/]+/git/refs$"),
+    re.compile(r"^DELETE api\.github\.com/repos/[^/]+/[^/]+/git/refs/.+$"),
+    re.compile(r"^POST api\.github\.com/repos/[^/]+/[^/]+/releases$"),
+    # Branch protection / collaborators / settings.
+    re.compile(
+        r"^PUT api\.github\.com/repos/[^/]+/[^/]+/branches/[^/]+/protection$"
+    ),
+    re.compile(r"^PUT api\.github\.com/repos/[^/]+/[^/]+/collaborators/.+$"),
+]
+
+
+def gated_route_matches(method: str, host: str, path: str) -> bool:
+    """Return True iff (method, host, path) is on the HITL gate list."""
+    line = f"{method.upper()} {host.lower()}{path}"
+    return any(p.search(line) for p in _GATED_ROUTES)
+
+
+async def _request_approval(
+    workflow_id: str,
+    *,
+    method: str,
+    host: str,
+    path: str,
+    temporal_target: str | None = None,
+):
+    """Issue the Workflow Update for HITL approval and return the
+    decision.
+
+    The Temporal client is imported lazily so unit tests that don't go
+    through this path don't pay the import cost. If
+    `temporal_target` is None, falls back to the env var
+    `TEMPORAL_TARGET`. Returns the ApprovalDecision-shaped dict the
+    workflow handler resolves to."""
+    from temporalio.client import Client
+
+    from src.models import ApprovalRequest
+
+    target = temporal_target or os.environ["TEMPORAL_TARGET"]
+    client = await Client.connect(target)
+    handle = client.get_workflow_handle(workflow_id)
+    req = ApprovalRequest(
+        approval_id=uuid.uuid4().hex,
+        tool_name=f"{method.upper()} {host}{path}",
+        tool_input={"host": host, "path": path, "method": method.upper()},
+        iteration=0,
+    )
+    decision = await handle.execute_update("request_tool_approval", req)
+    return decision
+
+
 def create_proxy_app(
     *,
     github_token: str,
@@ -64,6 +128,46 @@ def create_proxy_app(
             raise HTTPException(status_code=403, detail=f"host {host} not allowed")
         return {
             "allowed": True,
+            "injected": _injection_for(
+                host, github_token=github_token, anthropic_key=anthropic_key
+            ),
+        }
+
+    @app.post("/__forward")
+    async def forward(req: Request):
+        """Stub forward endpoint exercising the gate.
+
+        Real HTTPS CONNECT tunneling is Open Question #1. For HITL, the
+        path that matters is: extract (method, host, path) from the
+        request body, check `gated_route_matches`, and if it gates,
+        block on the Workflow Update before forwarding. The body is a
+        JSON object: `{host, method, path, workflow_id}`."""
+        body = await req.json()
+        host = (body.get("host") or "").lower()
+        method = (body.get("method") or "GET").upper()
+        path = body.get("path") or "/"
+        wf_id = body.get("workflow_id")
+        if host not in allowed and not any(host.endswith(f".{a}") for a in allowed):
+            raise HTTPException(status_code=403, detail=f"host {host} not allowed")
+        if gated_route_matches(method, host, path):
+            if not wf_id:
+                raise HTTPException(
+                    status_code=428,
+                    detail="gated route requires X-TheFork-Workflow-Id (workflow_id)",
+                )
+            decision = await _request_approval(
+                wf_id, method=method, host=host, path=path
+            )
+            if not getattr(decision, "allowed", False):
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"denied by human: {getattr(decision, 'reason', '')}",
+                )
+        return {
+            "would_forward": True,
+            "host": host,
+            "method": method,
+            "path": path,
             "injected": _injection_for(
                 host, github_token=github_token, anthropic_key=anthropic_key
             ),
