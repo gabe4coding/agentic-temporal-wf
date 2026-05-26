@@ -28,6 +28,12 @@ RUN case "${TARGETARCH:-amd64}" in \
 RUN pip install --no-cache-dir uv
 
 WORKDIR /app
+
+# Pattern-C hardening: refuse to ship sensitive paths in the image.
+RUN test ! -e /root/.ssh && test ! -e /root/.aws \
+    && test ! -e /root/.config/gcloud && test ! -e /root/.docker/config.json \
+    || (echo "sensitive path leaked into image" && exit 1)
+
 COPY pyproject.toml uv.lock* ./
 RUN uv sync --no-dev --frozen || uv sync --no-dev
 

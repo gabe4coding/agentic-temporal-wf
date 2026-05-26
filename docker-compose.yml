@@ -67,6 +67,9 @@ services:
       # URL of the egress proxy on sandbox-net. provision_sandbox injects
       # this into the sandbox container's HTTP_PROXY/HTTPS_PROXY env.
       - SANDBOX_EGRESS_PROXY_URL=http://egress-proxy:8888
+      # CVE-2026-21852 mitigation: pin API base URL.
+      - ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL:-https://api.anthropic.com}
+      - ALLOWED_REPOS=${ALLOWED_REPOS}
     depends_on:
       - temporal
       - sandbox-image
@@ -91,6 +94,7 @@ services:
     environment:
       - TEMPORAL_TARGET=temporal:7233
       - GATEWAY_BOOT=1
+      - ALLOWED_REPOS=${ALLOWED_REPOS}
     depends_on:
       - temporal
     command: ["uv", "run", "uvicorn", "src.gateway.app:app", "--host", "0.0.0.0", "--port", "8000"]
