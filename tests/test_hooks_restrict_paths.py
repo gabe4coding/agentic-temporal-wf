@@ -1,9 +1,11 @@
-"""Tests for .claude/hooks/restrict_paths.py.
+"""Tests for plugins/tf-guardrails/hooks/restrict_paths.py.
 
 The hook is a standalone script that Claude Code invokes as a
 PreToolUse subprocess: it reads a JSON payload from stdin and writes a
 JSON decision to stdout. We invoke it the same way (subprocess + stdin)
 so the tests cover the exact integration the CLI does.
+
+Phase 3.1 moved the hook into the tf-guardrails plugin bundle.
 """
 from __future__ import annotations
 
@@ -14,7 +16,10 @@ from pathlib import Path
 import pytest
 
 
-HOOK = Path(__file__).parent.parent / ".claude" / "hooks" / "restrict_paths.py"
+HOOK = (
+    Path(__file__).parent.parent
+    / "plugins" / "tf-guardrails" / "hooks" / "restrict_paths.py"
+)
 
 
 def run_hook(payload: dict) -> tuple[int, dict]:
