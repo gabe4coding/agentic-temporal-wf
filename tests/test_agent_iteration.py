@@ -1,89 +1,70 @@
-"""Tests for the run_agent_iteration activity.
+import json
+from unittest.mock import AsyncMock, MagicMock
 
-We mock claude_agent_sdk.query so we don't hit Anthropic. The mock yields
-a stream of fake messages culminating in a ResultMessage carrying a JSON
-tail that parses into a FixPlan.
-
-NOTE: temporalio 1.27.2's @activity.defn does NOT preserve `.__wrapped__`,
-so we test the bare async impl `_run_iteration_impl` directly.
-"""
 import pytest
 
-from src.activities.agent_iteration import (
-    _parse_fix_plan,
-    _run_iteration_impl,
-)
-from src.models import FixPlan, GitHubEvent, PRRef, WorkflowState
-
-
-def test_parse_fix_plan_from_clean_json_tail():
-    text = (
-        "Some narrative text.\n"
-        "More narrative.\n"
-        '{"action":"applied_fix","summary":"fixed lint","addressed_comment_ids":[],'
-        '"addressed_failures":["ruff"],"commit_sha":"abc1234","blocking_reason":null}'
-    )
-    plan = _parse_fix_plan(text)
-    assert plan.action == "applied_fix"
-    assert plan.commit_sha == "abc1234"
-    assert plan.addressed_failures == ["ruff"]
-
-
-def test_parse_fix_plan_falls_back_when_no_json():
-    text = "The agent wandered off without emitting JSON."
-    plan = _parse_fix_plan(text)
-    assert plan.action == "blocked"
-    assert "not parseable" in plan.blocking_reason.lower()
-
-
-def test_parse_fix_plan_falls_back_on_malformed_json():
-    text = "narrative\n{not really json}"
-    plan = _parse_fix_plan(text)
-    assert plan.action == "blocked"
+from src.activities.agent_iteration import _run_iteration_impl
+from src.models import FixPlan, GitHubEvent, PRRef, SandboxHandle, WorkflowState
 
 
 @pytest.mark.asyncio
-async def test_run_agent_iteration_invokes_query_and_returns_plan(monkeypatch):
-    """End-to-end (but mocked): activity sets env, calls query, parses plan."""
-
-    # Fake message stream
-    class _FakeResultMessage:
-        subtype = "success"
-        result = (
-            '{"action":"no_action_needed","summary":"nothing",'
-            '"addressed_comment_ids":[],"addressed_failures":[],'
-            '"commit_sha":null,"blocking_reason":null}'
-        )
-
-    async def fake_query(prompt, options):
-        yield _FakeResultMessage()
-
-    # Make isinstance(msg, ResultMessage) succeed against our fake by
-    # patching ResultMessage to the fake's class. Same trick for
-    # AssistantMessage so we don't accidentally match.
-    monkeypatch.setattr(
-        "src.activities.agent_iteration.ResultMessage", _FakeResultMessage
+async def test_dispatch_parses_result_line(monkeypatch):
+    state = WorkflowState(
+        pr=PRRef(owner="o", repo="r", number=1, head_sha="abc", head_ref="f"),
+        sandbox=SandboxHandle(container_id="cid"),
     )
+    events: list[GitHubEvent] = []
 
-    # Patch the activity's own reference to query so monkeypatching works
-    monkeypatch.setattr("src.activities.agent_iteration.query", fake_query)
-    # Patch build_options so we don't need GITHUB_TOKEN
-    monkeypatch.setattr(
-        "src.activities.agent_iteration.build_options", lambda: None
-    )
+    fake_stream = [
+        json.dumps({"type": "assistant", "content": [{"type": "tool_use", "name": "Read"}]}),
+        json.dumps({
+            "type": "result",
+            "subtype": "success",
+            "result": (
+                'Done.\n{"action":"no_action_needed","summary":"nothing to do",'
+                '"addressed_comment_ids":[],"addressed_failures":[],'
+                '"commit_sha":null,"blocking_reason":null}'
+            ),
+        }),
+    ]
 
-    # Patch activity.info so workdir_id resolves without a real Temporal context
-    class _FakeInfo:
-        workflow_id = "test-wf"
+    async def fake_dispatch(handle, prompt):
+        for line in fake_stream:
+            yield line
 
     monkeypatch.setattr(
-        "src.activities.agent_iteration.activity.info", lambda: _FakeInfo()
+        "src.activities.agent_iteration.dispatch_into_sandbox", fake_dispatch
     )
 
-    pr = PRRef(owner="o", repo="r", number=1, head_sha="abc", head_ref="main")
-    event = GitHubEvent(kind="pr_opened", delivery_id="d1", payload={})
-    state = WorkflowState(pr=pr)
-
-    plan = await _run_iteration_impl(state, [event])
+    plan = await _run_iteration_impl(state, events)
     assert isinstance(plan, FixPlan)
     assert plan.action == "no_action_needed"
+
+
+@pytest.mark.asyncio
+async def test_blocked_when_no_sandbox():
+    state = WorkflowState(
+        pr=PRRef(owner="o", repo="r", number=1, head_sha="abc", head_ref="f"),
+    )
+    plan = await _run_iteration_impl(state, [])
+    assert plan.action == "blocked"
+    assert "sandbox" in (plan.blocking_reason or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_abnormal_subtype_blocks(monkeypatch):
+    state = WorkflowState(
+        pr=PRRef(owner="o", repo="r", number=1, head_sha="abc", head_ref="f"),
+        sandbox=SandboxHandle(container_id="cid"),
+    )
+
+    async def fake_dispatch(handle, prompt):
+        yield json.dumps({"type": "result", "subtype": "error_max_turns", "result": ""})
+
+    monkeypatch.setattr(
+        "src.activities.agent_iteration.dispatch_into_sandbox", fake_dispatch
+    )
+
+    plan = await _run_iteration_impl(state, [])
+    assert plan.action == "blocked"
+    assert "error_max_turns" in (plan.blocking_reason or "")

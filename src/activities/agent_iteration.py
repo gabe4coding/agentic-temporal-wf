@@ -1,40 +1,38 @@
-"""Temporal activity wrapping one full Claude Agent SDK iteration.
+"""Pattern-C run_agent_iteration: dispatch + observe.
 
 The activity:
-  1. Sets AUTOFIX_WORKDIR_ID env var so SDK MCP tools can resolve workdir
-  2. Builds ClaudeAgentOptions
-  3. Starts a background heartbeat task (every 30s)
-  4. Iterates `async for msg in query(prompt, options)`:
-       - logs tool calls (best-effort, via AssistantMessage block inspect)
-       - captures the final ResultMessage.result text
-  5. Parses the trailing JSON line into a FixPlan
-  6. Returns the FixPlan
+  1. Resolves the workflow's SandboxHandle from state.
+  2. Builds the prompt (deterministic from state + events).
+  3. Calls dispatch_into_sandbox(handle, prompt) which spawns
+     `python -m src.agent_runner.main` inside the sandbox and yields
+     JSON-lines from its stdout.
+  4. For each line: counts it (for heartbeat detail), keeps a rolling
+     reference to the last result message.
+  5. Parses the FixPlan out of the result message's trailing JSON.
 
-NOTE: temporalio 1.27+ does not preserve `__wrapped__` on activities, so
-the real logic lives in `_run_iteration_impl` and `run_agent_iteration`
-is a thin pass-through. Unit tests call `_run_iteration_impl` directly.
-"""
+No in-process claude_agent_sdk.query() call lives here anymore. The
+Activity host is a control plane that never executes LLM-generated code.
+
+Caveat: dispatch_into_sandbox uses docker-py's low-level exec_start
+socket API. That interface has shifted across docker-py releases; we
+pin docker>=7.0 in pyproject. If the attribute name (`sock._sock`)
+breaks on a future release, replace with a direct aiohttp call to
+/exec/{id}/start (see plan Open Question #4)."""
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import re
+from typing import AsyncIterator
 
-from claude_agent_sdk import (
-    AssistantMessage,
-    ResultMessage,
-    query,
-)
 from temporalio import activity
 
-from src.agents.pr_fixer import build_options
-from src.models import FixPlan, GitHubEvent, WorkflowState
+from src.models import FixPlan, GitHubEvent, SandboxHandle, WorkflowState
 
 
 logger = logging.getLogger(__name__)
-
-
 HEARTBEAT_INTERVAL_S = 30
 
 
@@ -58,9 +56,6 @@ _JSON_TAIL_RE = re.compile(r"\{[^{}]*\"action\"[^{}]*\}", re.DOTALL)
 
 
 def _parse_fix_plan(text: str) -> FixPlan:
-    """Find the trailing JSON object in the agent's final text and parse
-    it as FixPlan. Fall back to a blocked FixPlan if no JSON tail is
-    findable or it doesn't validate."""
     if not text:
         return FixPlan(
             action="blocked",
@@ -76,9 +71,8 @@ def _parse_fix_plan(text: str) -> FixPlan:
                 "agent output not parseable: no JSON object containing 'action'"
             ),
         )
-    candidate = matches[-1].group(0)
     try:
-        return FixPlan.model_validate_json(candidate)
+        return FixPlan.model_validate_json(matches[-1].group(0))
     except Exception as e:
         return FixPlan(
             action="blocked",
@@ -87,88 +81,103 @@ def _parse_fix_plan(text: str) -> FixPlan:
         )
 
 
+async def dispatch_into_sandbox(
+    handle: SandboxHandle, prompt: str
+) -> AsyncIterator[str]:
+    """Spawn `python -m src.agent_runner.main` inside the sandbox via the
+    Docker exec API and yield stdout lines."""
+    import docker
+
+    client = docker.from_env()
+    container = client.containers.get(handle.container_id)
+    exec_id = client.api.exec_create(
+        container.id,
+        cmd=["python", "-m", "src.agent_runner.main"],
+        stdin=True,
+        stdout=True,
+        stderr=False,
+        workdir=handle.workdir,
+    )["Id"]
+    sock = client.api.exec_start(
+        exec_id, detach=False, tty=False, stream=False, socket=True
+    )
+    try:
+        # docker-py 7.x: the socket attribute is `_sock`. If this breaks
+        # on a newer release, switch to aiohttp + /exec/{id}/start (see
+        # module docstring + plan Open Question #4).
+        sock._sock.sendall(prompt.encode())
+        sock._sock.shutdown(1)  # SHUT_WR
+        buffer = b""
+        while True:
+            chunk = sock._sock.recv(65536)
+            if not chunk:
+                if buffer:
+                    yield buffer.decode("utf-8", errors="replace")
+                return
+            buffer += chunk
+            while b"\n" in buffer:
+                line, buffer = buffer.split(b"\n", 1)
+                yield line.decode("utf-8", errors="replace")
+    finally:
+        with contextlib.suppress(Exception):
+            sock.close()
+
+
 async def _heartbeat_loop(stop: asyncio.Event, counter: dict) -> None:
-    """Background task: heartbeat every HEARTBEAT_INTERVAL_S until stopped."""
     while not stop.is_set():
-        try:
+        with contextlib.suppress(RuntimeError):
             activity.heartbeat(counter)
-        except RuntimeError:
-            # Outside an activity (e.g., unit test) — nothing to heartbeat to.
-            pass
-        try:
+        with contextlib.suppress(asyncio.TimeoutError):
             await asyncio.wait_for(stop.wait(), timeout=HEARTBEAT_INTERVAL_S)
-        except asyncio.TimeoutError:
-            pass
 
 
 async def _run_iteration_impl(
     state: WorkflowState, events: list[GitHubEvent]
 ) -> FixPlan:
-    """Bare async implementation. Exposed so tests can bypass the
-    @activity.defn wrapper (temporalio 1.27+ does not preserve __wrapped__).
-    """
-    # Activity context (skipped in unit tests via monkeypatch)
+    handle = state.sandbox
+    if handle is None:
+        return FixPlan(
+            action="blocked",
+            summary="No sandbox provisioned.",
+            blocking_reason="state.sandbox is None — provision_sandbox not run",
+        )
+    prompt = _build_prompt(state, events)
+    counter: dict = {"messages": 0, "tool_calls": 0}
+    stop = asyncio.Event()
+    hb_task = asyncio.create_task(_heartbeat_loop(stop, counter))
+
+    final_text: str = ""
+    final_subtype: str | None = None
     try:
-        workflow_id = activity.info().workflow_id
-    except Exception:
-        workflow_id = "unit-test"
-    from src.tools._workdir import (
-        set_workdir_id,
-        reset_workdir_id,
-        set_sandbox_handle,
-        reset_sandbox_handle,
-    )
-    workdir_token = set_workdir_id(workflow_id)
-    sandbox_token = None
-    if state.sandbox is not None:
-        sandbox_token = set_sandbox_handle(state.sandbox)
-    try:
-        prompt = _build_prompt(state, events)
-        options = build_options()
-
-        counter: dict = {"assistant_messages": 0, "tool_calls": 0}
-        stop = asyncio.Event()
-        hb_task = asyncio.create_task(_heartbeat_loop(stop, counter))
-
-        final_text: str = ""
-        try:
-            async for msg in query(prompt=prompt, options=options):
-                if isinstance(msg, AssistantMessage):
-                    counter["assistant_messages"] += 1
-                    # Best-effort tool-call counter from the message's blocks
-                    blocks = getattr(msg, "content", None) or []
-                    for blk in blocks:
-                        if getattr(blk, "type", None) == "tool_use":
-                            counter["tool_calls"] += 1
-                elif isinstance(msg, ResultMessage):
-                    if getattr(msg, "subtype", None) == "success":
-                        final_text = getattr(msg, "result", "") or ""
-                    else:
-                        return FixPlan(
-                            action="blocked",
-                            summary="Agent terminated abnormally.",
-                            blocking_reason=f"ResultMessage.subtype={msg.subtype}",
-                        )
-        finally:
-            stop.set()
-            with contextlib.suppress(Exception):
-                await hb_task
-
-        return _parse_fix_plan(final_text)
+        async for raw in dispatch_into_sandbox(handle, prompt):
+            counter["messages"] += 1
+            try:
+                msg = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if msg.get("type") == "assistant":
+                for blk in msg.get("content") or []:
+                    if blk.get("type") == "tool_use":
+                        counter["tool_calls"] += 1
+            elif msg.get("type") == "result":
+                final_subtype = msg.get("subtype")
+                final_text = msg.get("result") or ""
     finally:
-        if sandbox_token is not None:
-            reset_sandbox_handle(sandbox_token)
-        reset_workdir_id(workdir_token)
+        stop.set()
+        with contextlib.suppress(Exception):
+            await hb_task
+
+    if final_subtype and final_subtype != "success":
+        return FixPlan(
+            action="blocked",
+            summary="Agent terminated abnormally.",
+            blocking_reason=f"ResultMessage.subtype={final_subtype}",
+        )
+    return _parse_fix_plan(final_text)
 
 
 @activity.defn
 async def run_agent_iteration(
     state: WorkflowState, events: list[GitHubEvent]
 ) -> FixPlan:
-    """One full agent iteration. Black-box from Temporal's perspective.
-
-    Thin pass-through to `_run_iteration_impl` so unit tests can call the
-    bare async function (temporalio's @activity.defn does not preserve
-    `__wrapped__` in current versions).
-    """
     return await _run_iteration_impl(state, events)
