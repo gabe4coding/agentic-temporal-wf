@@ -24,6 +24,24 @@ from src.activities.approval import notify_human_for_approval
 from src.observability.otel import setup_otel
 
 
+def _data_converter():
+    """Pattern-C: route Temporal payloads >10 KB to S3 if AWS_S3_BUCKET
+    is set. Documented pattern is `dataclasses.replace()` on the default
+    DataConverter — there's no `.with_payload_codec(...)` builder."""
+    import dataclasses
+
+    from temporalio.converter import DataConverter
+
+    bucket = os.environ.get("AWS_S3_BUCKET")
+    if not bucket:
+        return DataConverter.default
+    from src.payload_storage.s3_codec import S3PayloadCodec
+
+    return dataclasses.replace(
+        DataConverter.default, payload_codec=S3PayloadCodec(bucket=bucket)
+    )
+
+
 async def main() -> None:
     logging.basicConfig(level=logging.INFO)
     # Boot OTel before the Worker so Anthropic / Claude Agent SDK calls
@@ -32,6 +50,7 @@ async def main() -> None:
     setup_otel(os.environ.get("ARIZE_PROJECT", "agent-temporal-dev"))
     client = await Client.connect(
         os.environ.get("TEMPORAL_TARGET", "localhost:7233"),
+        data_converter=_data_converter(),
     )
     task_queue = os.environ.get("TEMPORAL_TASK_QUEUE", "pr-autofix")
     # prepare_workdir and cleanup_workdir are sync activities — Temporal
