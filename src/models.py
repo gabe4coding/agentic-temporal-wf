@@ -60,3 +60,33 @@ class WorkflowState(BaseModel):
     last_check_run_id: int | None = None
     closed: bool = False
     sandbox: SandboxHandle | None = None
+
+
+# ---------- HITL approval (Pattern-C rule 7) ----------
+
+
+class ApprovalRequest(BaseModel):
+    approval_id: str
+    tool_name: str
+    tool_input: dict
+    iteration: int
+
+
+class ApprovalDecision(BaseModel):
+    allowed: bool
+    reason: str = ""
+    modified_input: dict | None = None
+
+
+class ApprovalState(BaseModel):
+    approval_id: str
+    pending: bool = True
+    allowed: bool = False
+    reason: str = ""
+
+    @property
+    def decided(self) -> bool:
+        return not self.pending
+
+    def to_decision(self) -> ApprovalDecision:
+        return ApprovalDecision(allowed=self.allowed, reason=self.reason)
