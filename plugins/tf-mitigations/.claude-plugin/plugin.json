@@ -1,0 +1,6 @@
+{
+  "name": "tf-mitigations",
+  "version": "1.0.0",
+  "description": "TheFork defensive mitigations: secret-scan + commit-trailer verification.",
+  "hooks": "./hooks/hooks.json"
+}
