@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 /app/.claude/hooks/restrict_paths.py",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/restrict_paths.py",
             "timeout": 5
           }
         ]

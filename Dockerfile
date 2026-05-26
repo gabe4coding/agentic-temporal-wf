@@ -39,16 +39,11 @@ RUN uv sync --no-dev --frozen || uv sync --no-dev
 
 COPY src/ ./src/
 
-# L4 policy: PreToolUse hooks for Claude Code. The hooks script and the
-# CLI settings file are copied here and made read-only so the agent
-# can't tamper with its own permission boundary at runtime.
-# `worker-settings.json` becomes settings.json so the CLI picks it up
-# from cwd=/app. The dev `.claude/settings.json` at the repo root is
-# intentionally NOT shipped — that one is for laptop Claude Code usage
-# and does not include the worker-scoped hooks.
-COPY .claude/hooks/ /app/.claude/hooks/
-COPY .claude/worker-settings.json /app/.claude/settings.json
-RUN chmod -R 555 /app/.claude
+# Pattern-C plugin distribution: ship the org-level guardrails bundle
+# into the worker image at a stable path. The Claude Agent SDK loads it
+# via plugins=[{"type": "local", "path": "/plugins/tf-guardrails"}].
+COPY plugins/ /plugins/
+RUN chmod -R 555 /plugins
 
 # Worker entrypoint by default; gateway overrides via `command:` in compose
 CMD ["uv", "run", "python", "-m", "src.worker"]

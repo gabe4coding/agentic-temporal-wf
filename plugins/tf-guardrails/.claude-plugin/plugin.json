@@ -1,0 +1,7 @@
+{
+  "name": "tf-guardrails",
+  "version": "1.0.0",
+  "description": "TheFork org-level guardrails: path scoping + categorical tool deny.",
+  "author": "TheFork Architecture",
+  "hooks": "./hooks/hooks.json"
+}
