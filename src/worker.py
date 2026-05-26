@@ -22,7 +22,11 @@ from src.activities.sandbox import (
 )
 from src.activities.approval import notify_human_for_approval
 from src.activities.snapshot import snapshot_sandbox, restore_sandbox
-from src.observability.otel import setup_otel
+
+# Note: setup_otel is intentionally NOT imported here. The Claude Agent
+# SDK runs inside the sandbox container, not in this Worker process, so
+# the OpenInference instrumentor must be initialized in agent_runner/main.py
+# (its actual Python process). Calling it here would be a no-op.
 
 
 def _build_id() -> str:
@@ -52,10 +56,6 @@ def _data_converter():
 
 async def main() -> None:
     logging.basicConfig(level=logging.INFO)
-    # Boot OTel before the Worker so Anthropic / Claude Agent SDK calls
-    # made by the activities are auto-instrumented (Pattern-C
-    # observability — feeds Arize via OpenInference).
-    setup_otel(os.environ.get("ARIZE_PROJECT", "agent-temporal-dev"))
     client = await Client.connect(
         os.environ.get("TEMPORAL_TARGET", "localhost:7233"),
         data_converter=_data_converter(),

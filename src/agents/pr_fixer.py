@@ -84,6 +84,29 @@ def build_options() -> ClaudeAgentOptions:
     egress_proxy = os.environ.get(
         "SANDBOX_EGRESS_PROXY_URL", "http://egress-proxy:8888"
     )
+    # Claude Code CLI native OpenTelemetry. The Python SDK runs the CLI
+    # as a subprocess that has OTel instrumentation built in but
+    # disabled by default. Enable it here and route to Phoenix (or any
+    # OTLP collector). Endpoint comes from $OTEL_EXPORTER_OTLP_ENDPOINT
+    # which the worker injects into the sandbox env via
+    # provision_sandbox.
+    # Reference: https://code.claude.com/docs/en/agent-sdk/observability
+    cli_otel_env: dict[str, str] = {}
+    cli_otlp_endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
+    if cli_otlp_endpoint:
+        cli_otel_env = {
+            "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+            "CLAUDE_CODE_ENHANCED_TELEMETRY_BETA": "1",
+            "OTEL_TRACES_EXPORTER": "otlp",
+            "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
+            "OTEL_EXPORTER_OTLP_ENDPOINT": cli_otlp_endpoint,
+            "OTEL_SERVICE_NAME": "agent-temporal-autofix",
+            # Default flush is 5s; lower for short-lived agent calls
+            # so spans land before the subprocess exits.
+            "OTEL_TRACES_EXPORT_INTERVAL": "1000",
+            "OTEL_METRIC_EXPORT_INTERVAL": "1000",
+            "OTEL_LOGS_EXPORT_INTERVAL": "1000",
+        }
     return ClaudeAgentOptions(
         system_prompt=INSTRUCTIONS,
         mcp_servers={
@@ -119,5 +142,6 @@ def build_options() -> ClaudeAgentOptions:
             "CLAUDE_CODE_MAX_RETRIES": "0",
             "HTTPS_PROXY": egress_proxy,
             "HTTP_PROXY": egress_proxy,
+            **cli_otel_env,
         },
     )

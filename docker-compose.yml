@@ -56,6 +56,18 @@ services:
       - default
     restart: unless-stopped
 
+  phoenix:
+    # Arize Phoenix — self-hosted OpenInference UI + OTLP collector.
+    # Sandbox containers send spans to http://phoenix:6006/v1/traces;
+    # the UI is exposed on the host at localhost:6006 for inspection.
+    image: arizephoenix/phoenix:latest
+    ports:
+      - "6006:6006"
+    networks:
+      - sandbox-net
+      - default
+    restart: unless-stopped
+
   egress-proxy:
     # HTTPS CONNECT forward proxy with FQDN allowlist. The claude CLI
     # and any HTTPS client inside the sandbox uses
@@ -92,6 +104,15 @@ services:
       # Pattern-C Worker Versioning: pin in-flight Workflows to the
       # worker version that started them. CI sets $GITHUB_SHA.
       - WORKER_BUILD_ID=${WORKER_BUILD_ID:-dev}
+      # OpenInference: provision_sandbox forwards these into the
+      # sandbox env so the agent_runner can initialize OTel inside.
+      - PHOENIX_COLLECTOR_ENDPOINT=${PHOENIX_COLLECTOR_ENDPOINT:-http://phoenix:6006/v1/traces}
+      # Native CLI OTel base endpoint (no /v1/traces suffix — the CLI
+      # appends it). Same Phoenix, different consumer.
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://phoenix:6006}
+      - ARIZE_SPACE_ID=${ARIZE_SPACE_ID:-}
+      - ARIZE_API_KEY=${ARIZE_API_KEY:-}
+      - ARIZE_PROJECT=${ARIZE_PROJECT:-agent-temporal-dev}
     depends_on:
       - temporal
       - sandbox-image

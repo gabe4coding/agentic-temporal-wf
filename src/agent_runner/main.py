@@ -42,7 +42,16 @@ def _serialise(msg) -> dict:
 
 
 async def _amain() -> int:
+    # OTel must be initialized in *this* process — the SDK's
+    # ClaudeAgentSDKInstrumentor only sees query()/tool calls made by
+    # the Python interpreter it patched. The Worker process never makes
+    # them; we do.
+    import os
+
     from src.agents.pr_fixer import build_options
+    from src.observability.otel import setup_otel
+
+    setup_otel(os.environ.get("ARIZE_PROJECT", "agent-temporal-dev"))
 
     prompt = sys.stdin.read()
     options = build_options()

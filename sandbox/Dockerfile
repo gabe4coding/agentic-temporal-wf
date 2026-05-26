@@ -24,7 +24,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 
 RUN pip install --no-cache-dir \
-    ruff pytest claude-agent-sdk pydantic httpx
+    ruff pytest claude-agent-sdk pydantic httpx \
+    openinference-instrumentation-claude-agent-sdk \
+    opentelemetry-sdk opentelemetry-exporter-otlp
 
 # agent_runner module + the modules it imports (models, tools, agents).
 # COPY at /opt and add to PYTHONPATH so `python -m src.agent_runner.main`
@@ -34,6 +36,7 @@ COPY src/agent_runner /opt/src/agent_runner
 COPY src/agents /opt/src/agents
 COPY src/models.py /opt/src/models.py
 COPY src/tools /opt/src/tools
+COPY src/observability /opt/src/observability
 COPY plugins /plugins
 
 # /work is the per-workflow workdir mounted from the host's

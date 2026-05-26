@@ -122,6 +122,18 @@ def _provision_sandbox_impl(
     anthropic_key = _os.environ.get("ANTHROPIC_API_KEY")
     if anthropic_key:
         env_for_sandbox["ANTHROPIC_API_KEY"] = anthropic_key
+    # OpenInference observability: forward whichever backend the worker
+    # operator has configured. Phoenix wins if both are set.
+    for var in (
+        "PHOENIX_COLLECTOR_ENDPOINT",
+        "OTEL_EXPORTER_OTLP_ENDPOINT",
+        "ARIZE_SPACE_ID",
+        "ARIZE_API_KEY",
+        "ARIZE_PROJECT",
+    ):
+        val = _os.environ.get(var)
+        if val:
+            env_for_sandbox[var] = val
     if egress_proxy:
         env_for_sandbox.update(
             {
@@ -131,8 +143,10 @@ def _provision_sandbox_impl(
                 "https_proxy": egress_proxy,
                 # api.anthropic.com is reached via the tunnel as a normal
                 # CONNECT — listed in the egress-proxy filter file.
-                "NO_PROXY": "localhost,127.0.0.1,egress-proxy,credential-proxy",
-                "no_proxy": "localhost,127.0.0.1,egress-proxy,credential-proxy",
+                # phoenix is reached over plain HTTP for OTel — don't
+                # route it through the HTTPS tunnel.
+                "NO_PROXY": "localhost,127.0.0.1,egress-proxy,credential-proxy,phoenix",
+                "no_proxy": "localhost,127.0.0.1,egress-proxy,credential-proxy,phoenix",
             }
         )
     run_kwargs["environment"] = env_for_sandbox
