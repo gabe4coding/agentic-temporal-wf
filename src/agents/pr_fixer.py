@@ -1,10 +1,20 @@
 """Claude Agent SDK options builder for the PR autofix agent.
 
-This module exports the system prompt (INSTRUCTIONS) and a factory
-build_options() that produces ClaudeAgentOptions ready to pass to
-claude_agent_sdk.query(). The actual loop is in
-src/activities/agent_iteration.py.
+Pattern-C target:
+- SDK-native options.sandbox replaces IS_SANDBOX=1 + bypassPermissions.
+- permission_mode=default (combined with disallowed_tools + plugins/hooks).
+- plugins[] loaded from /plugins/tf-guardrails and /plugins/tf-mitigations.
+- can_use_tool wired to the in-sandbox fast-path guard; the durable HITL
+  gate lives on the credential proxy outside the sandbox (rule 7).
+
+Note on types: `SandboxSettings` and `SandboxNetworkConfig` are TypedDicts
+defined in claude_agent_sdk.types with camelCase keys (per upstream
+src/claude_agent_sdk/types.py). The cleanest call shape is plain dicts.
 """
+from __future__ import annotations
+
+import os
+
 from claude_agent_sdk import ClaudeAgentOptions
 
 from src.tools.github_mcp import build_github_mcp_config
@@ -46,12 +56,24 @@ last JSON-shaped line of your output.
 """
 
 
-def build_options() -> ClaudeAgentOptions:
-    """Construct ClaudeAgentOptions for one agent iteration.
+# Domains the agent is allowed to reach. The credential proxy enforces
+# this too (defense in depth — the SDK-native block is L1/L2, the proxy
+# is L0).
+_ALLOWED_DOMAINS = [
+    "api.github.com",
+    "github.com",
+    "raw.githubusercontent.com",
+    "api.anthropic.com",
+    "pypi.org",
+    "files.pythonhosted.org",
+]
 
-    Reads GITHUB_TOKEN and AUTOFIX_WORKDIR_ID from the process env. Both
-    must be set by the activity before calling this.
-    """
+
+def build_options() -> ClaudeAgentOptions:
+    """Construct ClaudeAgentOptions for one agent iteration."""
+    proxy_url = os.environ.get(
+        "CREDENTIAL_PROXY_URL", "http://credential-proxy:8443"
+    )
     return ClaudeAgentOptions(
         system_prompt=INSTRUCTIONS,
         mcp_servers={
@@ -66,6 +88,26 @@ def build_options() -> ClaudeAgentOptions:
             "mcp__github__*",
             "mcp__repo__*",
         ],
-        permission_mode="bypassPermissions",
-        env={"CLAUDE_CODE_MAX_RETRIES": "0"},
+        disallowed_tools=["Bash", "Write", "WebFetch"],
+        permission_mode="default",
+        # SandboxSettings is a TypedDict with camelCase keys — see
+        # claude_agent_sdk.types in upstream.
+        sandbox={
+            "enabled": True,
+            "autoAllowBashIfSandboxed": False,
+            "excludedCommands": ["docker", "kubectl", "ssh"],
+            "network": {
+                "allowedDomains": _ALLOWED_DOMAINS,
+                "allowLocalBinding": True,
+            },
+        },
+        plugins=[
+            {"type": "local", "path": "/plugins/tf-guardrails"},
+            {"type": "local", "path": "/plugins/tf-mitigations"},
+        ],
+        env={
+            "CLAUDE_CODE_MAX_RETRIES": "0",
+            "HTTPS_PROXY": proxy_url,
+            "HTTP_PROXY": proxy_url,
+        },
     )
