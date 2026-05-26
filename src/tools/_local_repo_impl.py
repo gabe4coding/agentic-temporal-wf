@@ -159,7 +159,15 @@ def git_status(workdir: Target) -> GitStatus:
     return GitStatus(branch=branch, dirty=dirty)
 
 
-def git_commit_and_push(workdir: Target, message: str) -> CommitResult:
+def git_commit_and_push(
+    workdir: Target,
+    message: str,
+    *,
+    idempotency_key: str | None = None,
+) -> CommitResult:
+    """Stage all, commit, push. If `idempotency_key` is given, it is
+    appended as an `Autofix-Idempotency:` trailer so retries are
+    detectable from git history (Pattern-C rule 6)."""
     _, branch_out, _ = _git(workdir, "rev-parse", "--abbrev-ref", "HEAD")
     branch = branch_out.strip()
 
@@ -178,6 +186,8 @@ def git_commit_and_push(workdir: Target, message: str) -> CommitResult:
         if AUTOFIX_COMMIT_TRAILER in message
         else f"{message}\n\n{AUTOFIX_COMMIT_TRAILER}"
     )
+    if idempotency_key:
+        full_message += f"\nAutofix-Idempotency: {idempotency_key}"
     commit_rc, _, commit_err = _git(workdir, "commit", "-m", full_message)
     if commit_rc != 0:
         return CommitResult(pushed=False, reason=commit_err.strip())
