@@ -40,17 +40,14 @@ services:
     entrypoint: ["true"]
     restart: "no"
 
-  egress-proxy:
-    # Forward-only proxy bridging the internal sandbox-net to the
-    # outside. Enforces an explicit FQDN allow-list (see
-    # sandbox/egress-proxy/filter). Sandbox containers reach the outside
-    # only via this hop; everything else is dropped at the network layer.
+  credential-proxy:
     build:
-      context: ./sandbox/egress-proxy
-    image: agent-sandbox-egress-proxy:latest
+      context: .
+      dockerfile: src/proxy/Dockerfile
+    env_file: .env
     networks:
-      - sandbox-net   # internal-only side, where sandbox containers reach it
-      - default       # outbound side (has NAT to the host)
+      - sandbox-net
+      - default
     restart: unless-stopped
 
   worker:
@@ -63,16 +60,17 @@ services:
       # The sandbox-net network is project-prefixed by docker-compose;
       # pass the resolved name so provision_sandbox can attach to it.
       - SANDBOX_NETWORK_NAME=${COMPOSE_PROJECT_NAME:-agent-temporal}_sandbox-net
-      # URL of the egress proxy on sandbox-net. provision_sandbox injects
+      # URL of the credential proxy on sandbox-net. provision_sandbox injects
       # this into the sandbox container's HTTP_PROXY/HTTPS_PROXY env.
-      - SANDBOX_EGRESS_PROXY_URL=http://egress-proxy:8888
+      - SANDBOX_EGRESS_PROXY_URL=http://credential-proxy:8443
+      - CREDENTIAL_PROXY_URL=http://credential-proxy:8443
       # CVE-2026-21852 mitigation: pin API base URL.
       - ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL:-https://api.anthropic.com}
       - ALLOWED_REPOS=${ALLOWED_REPOS}
     depends_on:
       - temporal
       - sandbox-image
-      - egress-proxy
+      - credential-proxy
     networks:
       - default
     volumes:
@@ -104,8 +102,8 @@ networks:
   sandbox-net:
     driver: bridge
     # Internal-only: containers on this network have NO direct route to
-    # the outside. Egress goes through the egress-proxy service, which
-    # enforces an FQDN allow-list (sandbox/egress-proxy/filter).
+    # the outside. Egress goes through the credential-proxy service, which
+    # enforces an FQDN allow-list and injects real credentials.
     internal: true
 
 volumes:
