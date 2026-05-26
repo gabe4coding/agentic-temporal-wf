@@ -20,6 +20,7 @@ from src.activities.sandbox import (
     resume_sandbox,
     teardown_sandbox,
 )
+from src.activities.approval import notify_human_for_approval
 
 
 async def main() -> None:
@@ -49,6 +50,7 @@ async def main() -> None:
                 pause_sandbox,
                 resume_sandbox,
                 teardown_sandbox,
+                notify_human_for_approval,
             ],
             activity_executor=activity_executor,
         ):

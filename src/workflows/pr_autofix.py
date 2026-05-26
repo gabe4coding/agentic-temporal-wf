@@ -10,6 +10,9 @@ with workflow.unsafe.imports_passed_through():
         GitHubEvent,
         WorkflowState,
         FixPlan,
+        ApprovalRequest,
+        ApprovalDecision,
+        ApprovalState,
     )
     from src.activities.lifecycle import (
         prepare_workdir,
@@ -18,6 +21,7 @@ with workflow.unsafe.imports_passed_through():
     )
     from src.activities.agent_iteration import run_agent_iteration
     from src.activities.sandbox import provision_sandbox, teardown_sandbox
+    from src.activities.approval import notify_human_for_approval
 
 
 MAX_ITERATIONS = 5
@@ -31,6 +35,7 @@ class PRAutofixWorkflow:
         self._state: WorkflowState = (
             init if isinstance(init, WorkflowState) else WorkflowState(pr=init)
         )
+        self._approvals: dict[str, ApprovalState] = {}
 
     @workflow.signal
     async def on_event(self, event: GitHubEvent) -> None:
@@ -46,6 +51,39 @@ class PRAutofixWorkflow:
     @workflow.query
     def get_state(self) -> WorkflowState:
         return self._state
+
+    @workflow.update
+    async def request_tool_approval(self, req: ApprovalRequest) -> ApprovalDecision:
+        """Durable HITL approval gate (Pattern-C rule 7).
+
+        The proxy issues this Update for side-effectful tool routes; the
+        handler stores the pending state, fires the notification activity,
+        then waits up to 24h for the human's Signal."""
+        self._approvals[req.approval_id] = ApprovalState(
+            approval_id=req.approval_id, pending=True
+        )
+        await workflow.execute_activity(
+            notify_human_for_approval,
+            args=[self._state.pr.owner, self._state.pr.repo, self._state.pr.number, req],
+            start_to_close_timeout=timedelta(minutes=1),
+        )
+        await workflow.wait_condition(
+            lambda: self._approvals[req.approval_id].decided,
+            timeout=timedelta(hours=24),
+        )
+        return self._approvals.pop(req.approval_id).to_decision()
+
+    @workflow.signal
+    def submit_approval_decision(self, payload: dict) -> None:
+        """Carry the human's decision back into the workflow. `payload` is
+        a plain dict so the gateway/proxy can send raw JSON without sharing
+        ApprovalState model imports."""
+        st = self._approvals.get(payload["approval_id"])
+        if st is None:
+            return
+        st.pending = False
+        st.allowed = bool(payload.get("allowed", False))
+        st.reason = payload.get("reason", "")
 
     @workflow.run
     async def run(self, init: PRRef | WorkflowState) -> str:
