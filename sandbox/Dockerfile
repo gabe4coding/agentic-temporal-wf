@@ -1,6 +1,6 @@
 FROM python:3.12-slim
 
-ARG CLAUDE_CODE_VERSION=2.0.65
+ARG CLAUDE_CODE_VERSION=2.1.150
 
 # Pattern-C: the sandbox image carries the Claude Code CLI, the Python
 # Agent SDK, the agent_runner entrypoint and the org plugin bundle. It
