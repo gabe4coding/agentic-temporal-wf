@@ -61,13 +61,23 @@ class S3PayloadCodec(PayloadCodec):
                 continue
             key = f"{self._prefix}/{uuid.uuid4().hex}.bin"
             self._s3().put_object(Bucket=self._bucket, Key=key, Body=p.data)
-            new_meta = dict(p.metadata)
-            new_meta["encoding"] = _S3_ENCODING
+            # Encode the original metadata into the inline reference so
+            # decode can restore it exactly. We replace the metadata on
+            # the wire with just {"encoding": binary/s3} so consumers
+            # know to round-trip through this codec.
+            original_meta = {
+                k: (v.decode("latin-1") if isinstance(v, (bytes, bytearray)) else v)
+                for k, v in p.metadata.items()
+            }
             out.append(
                 Payload(
-                    metadata=new_meta,
+                    metadata={"encoding": _S3_ENCODING},
                     data=json.dumps(
-                        {"bucket": self._bucket, "key": key}
+                        {
+                            "bucket": self._bucket,
+                            "key": key,
+                            "meta": original_meta,
+                        }
                     ).encode(),
                 )
             )
@@ -82,6 +92,9 @@ class S3PayloadCodec(PayloadCodec):
             ref = json.loads(p.data.decode())
             obj = self._s3().get_object(Bucket=ref["bucket"], Key=ref["key"])
             data = obj["Body"].read()
-            new_meta = {k: v for k, v in p.metadata.items() if k != "encoding"}
-            out.append(Payload(metadata=new_meta, data=data))
+            restored = {
+                k: (v.encode("latin-1") if isinstance(v, str) else v)
+                for k, v in (ref.get("meta") or {}).items()
+            }
+            out.append(Payload(metadata=restored, data=data))
         return out
