@@ -10,9 +10,15 @@ ARG CLAUDE_CODE_VERSION=2.0.65
 # by provision_sandbox, not by the in-container uid.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git ca-certificates curl \
+    bubblewrap socat \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
+
+# bubblewrap + socat are required by ClaudeAgentOptions.sandbox to
+# activate filesystem/network isolation at the L1/L2 layer (Dec 2025
+# SDK). Without them the SDK silently degrades to "no sandbox" — Docker
+# remains the only boundary (L0).
 
 # Pin Claude Code CLI to a post-CVE-2025-66479 release.
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}

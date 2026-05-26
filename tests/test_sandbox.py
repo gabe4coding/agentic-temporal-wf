@@ -130,15 +130,22 @@ def test_provision_sandbox_inherits_worker_mounts_via_volumes_from(
     assert kwargs["volumes_from"] == ["worker-container-name"]
 
 
-def test_provision_sandbox_injects_egress_proxy_env(
+def test_provision_sandbox_injects_credential_proxy_env(
     fake_docker, monkeypatch: pytest.MonkeyPatch
 ):
     """When SANDBOX_EGRESS_PROXY_URL is set, the sandbox container must
-    receive HTTP_PROXY/HTTPS_PROXY so git/curl/pip route through the
-    FQDN-filtering forward proxy on the internal sandbox-net."""
+    receive HTTP_PROXY/HTTPS_PROXY so git/curl/httpx route through the
+    credential proxy on the internal sandbox-net.
+
+    Also: CREDENTIAL_PROXY_URL is always set (sandbox clients use it to
+    fetch tokens). NO_PROXY excludes the proxy itself and api.anthropic.com
+    (Open Question #1 — until mitmproxy MITM ships, the Anthropic API
+    call cannot go through this proxy)."""
     from src.activities.sandbox import _provision_sandbox_impl
 
     monkeypatch.setenv("SANDBOX_EGRESS_PROXY_URL", "http://egress-proxy:8888")
+    monkeypatch.setenv("CREDENTIAL_PROXY_URL", "http://credential-proxy:8443")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
     _provision_sandbox_impl(
         workflow_id="wf-2", host_workdir="/tmp/autofix-wf-2/repo"
@@ -148,29 +155,51 @@ def test_provision_sandbox_injects_egress_proxy_env(
     env = kwargs["environment"]
     assert env["HTTPS_PROXY"] == "http://egress-proxy:8888"
     assert env["HTTP_PROXY"] == "http://egress-proxy:8888"
-    # Lowercase variants too — many tools only honor those.
     assert env["https_proxy"] == "http://egress-proxy:8888"
-    # NO_PROXY must keep the proxy itself reachable (avoid a recursion loop)
-    # plus loopback.
+    # CREDENTIAL_PROXY_URL is the token endpoint (separate service).
+    assert env["CREDENTIAL_PROXY_URL"] == "http://credential-proxy:8443"
+    # NO_PROXY excludes the proxies themselves (avoid recursion) +
+    # loopback. api.anthropic.com goes through the tunnel.
     assert "egress-proxy" in env["NO_PROXY"]
+    assert "credential-proxy" in env["NO_PROXY"]
     assert "127.0.0.1" in env["NO_PROXY"]
 
 
-def test_provision_sandbox_omits_proxy_env_when_unset(
+def test_provision_sandbox_ships_anthropic_key_when_present(
     fake_docker, monkeypatch: pytest.MonkeyPatch
 ):
-    """Without SANDBOX_EGRESS_PROXY_URL the container starts without proxy
-    env — useful for local smoke tests that don't bring up the proxy."""
+    """Open Question #1 concession: ANTHROPIC_API_KEY is shipped into
+    the sandbox env because the current credential-proxy is not an
+    HTTPS-MITM and cannot inject the key at the boundary."""
+    from src.activities.sandbox import _provision_sandbox_impl
+
+    monkeypatch.setenv("SANDBOX_EGRESS_PROXY_URL", "http://credential-proxy:8443")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    _provision_sandbox_impl(workflow_id="wf-a", host_workdir="/tmp/autofix-wf-a/repo")
+
+    _, kwargs = fake_docker.containers.run_calls[0]
+    assert kwargs["environment"]["ANTHROPIC_API_KEY"] == "sk-ant-test"
+
+
+def test_provision_sandbox_minimal_env_when_proxy_unset(
+    fake_docker, monkeypatch: pytest.MonkeyPatch
+):
+    """Without SANDBOX_EGRESS_PROXY_URL the container still gets
+    CREDENTIAL_PROXY_URL (default) but no HTTPS_PROXY routing —
+    useful for unit tests that don't bring up the proxy."""
     from src.activities.sandbox import _provision_sandbox_impl
 
     monkeypatch.delenv("SANDBOX_EGRESS_PROXY_URL", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
     _provision_sandbox_impl(
         workflow_id="wf-3", host_workdir="/tmp/autofix-wf-3/repo"
     )
 
     _, kwargs = fake_docker.containers.run_calls[0]
-    assert "environment" not in kwargs
+    env = kwargs["environment"]
+    assert "HTTPS_PROXY" not in env  # routing skipped
+    assert env["CREDENTIAL_PROXY_URL"]  # default still set
 
 
 def test_provision_sandbox_does_not_clone_or_fetch(fake_docker):

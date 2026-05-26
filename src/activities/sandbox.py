@@ -99,19 +99,43 @@ def _provision_sandbox_impl(
     sandbox_network = _os.environ.get("SANDBOX_NETWORK_NAME")
     if sandbox_network:
         run_kwargs["network"] = sandbox_network
-    # Force outbound traffic through the egress-proxy on sandbox-net.
-    # The proxy enforces an FQDN allow-list. Setting HTTP_PROXY +
-    # HTTPS_PROXY covers git, curl/pip via libcurl, and httpx by default.
+    # Pattern-C: two separate proxies serve different concerns.
+    #
+    # - SANDBOX_EGRESS_PROXY_URL (tinyproxy) is the HTTPS CONNECT tunnel
+    #   with the FQDN allowlist. The claude CLI and any HTTPS client
+    #   uses it as HTTPS_PROXY.
+    # - CREDENTIAL_PROXY_URL is the REST endpoint (token fetch + HITL
+    #   gate). Sandbox-side code (github MCP, agent_runner) speaks HTTP
+    #   to it directly.
     egress_proxy = _os.environ.get("SANDBOX_EGRESS_PROXY_URL")
+    credential_proxy = _os.environ.get(
+        "CREDENTIAL_PROXY_URL", "http://credential-proxy:8443"
+    )
+    env_for_sandbox: dict[str, str] = {
+        "CREDENTIAL_PROXY_URL": credential_proxy,
+    }
+    # Anthropic API key: Open Question #1 — the proxy stack cannot MITM
+    # HTTPS to inject keys at the boundary today, so we ship
+    # ANTHROPIC_API_KEY into the sandbox env and let the claude CLI use
+    # it directly. The full Pattern-C target (mitmproxy + injected CA)
+    # is tracked as the follow-up.
+    anthropic_key = _os.environ.get("ANTHROPIC_API_KEY")
+    if anthropic_key:
+        env_for_sandbox["ANTHROPIC_API_KEY"] = anthropic_key
     if egress_proxy:
-        run_kwargs["environment"] = {
-            "HTTP_PROXY": egress_proxy,
-            "HTTPS_PROXY": egress_proxy,
-            "http_proxy": egress_proxy,
-            "https_proxy": egress_proxy,
-            "NO_PROXY": "localhost,127.0.0.1,egress-proxy",
-            "no_proxy": "localhost,127.0.0.1,egress-proxy",
-        }
+        env_for_sandbox.update(
+            {
+                "HTTP_PROXY": egress_proxy,
+                "HTTPS_PROXY": egress_proxy,
+                "http_proxy": egress_proxy,
+                "https_proxy": egress_proxy,
+                # api.anthropic.com is reached via the tunnel as a normal
+                # CONNECT — listed in the egress-proxy filter file.
+                "NO_PROXY": "localhost,127.0.0.1,egress-proxy,credential-proxy",
+                "no_proxy": "localhost,127.0.0.1,egress-proxy,credential-proxy",
+            }
+        )
+    run_kwargs["environment"] = env_for_sandbox
     if worker_hostname:
         run_kwargs["volumes_from"] = [worker_hostname]
     container = client.containers.run(SANDBOX_IMAGE, **run_kwargs)

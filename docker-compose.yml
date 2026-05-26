@@ -34,17 +34,38 @@ services:
     # One-shot service that builds the per-workflow sandbox image. The
     # worker spawns sibling containers from this image via the mounted
     # docker.sock; it does NOT run the image itself.
+    # Context is the repo root so the Dockerfile can COPY src/ and
+    # plugins/ which live above sandbox/.
     build:
-      context: ./sandbox
+      context: .
+      dockerfile: sandbox/Dockerfile
     image: agent-sandbox:latest
     entrypoint: ["true"]
     restart: "no"
 
   credential-proxy:
+    # HTTP REST endpoints: /__token, /__inject_test, /__forward,
+    # /healthz. NOT an HTTPS forward proxy — that role is owned by
+    # egress-proxy (tinyproxy) below.
     build:
       context: .
       dockerfile: src/proxy/Dockerfile
     env_file: .env
+    networks:
+      - sandbox-net
+      - default
+    restart: unless-stopped
+
+  egress-proxy:
+    # HTTPS CONNECT forward proxy with FQDN allowlist. The claude CLI
+    # and any HTTPS client inside the sandbox uses
+    # HTTPS_PROXY=http://egress-proxy:8888 to reach api.anthropic.com,
+    # api.github.com, etc. The token-injection role lives on
+    # credential-proxy (separate concern). Full Pattern-C MITM
+    # injection is Open Question #1.
+    build:
+      context: ./sandbox/egress-proxy
+    image: agent-sandbox-egress-proxy:latest
     networks:
       - sandbox-net
       - default
@@ -60,9 +81,10 @@ services:
       # The sandbox-net network is project-prefixed by docker-compose;
       # pass the resolved name so provision_sandbox can attach to it.
       - SANDBOX_NETWORK_NAME=${COMPOSE_PROJECT_NAME:-agent-temporal}_sandbox-net
-      # URL of the credential proxy on sandbox-net. provision_sandbox injects
-      # this into the sandbox container's HTTP_PROXY/HTTPS_PROXY env.
-      - SANDBOX_EGRESS_PROXY_URL=http://credential-proxy:8443
+      # HTTPS CONNECT tunnel for sandbox egress (FQDN allowlist).
+      # provision_sandbox stamps this into HTTPS_PROXY/HTTP_PROXY.
+      - SANDBOX_EGRESS_PROXY_URL=http://egress-proxy:8888
+      # Credential-proxy HTTP endpoints (token fetch + future HITL gate).
       - CREDENTIAL_PROXY_URL=http://credential-proxy:8443
       # CVE-2026-21852 mitigation: pin API base URL.
       - ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL:-https://api.anthropic.com}
@@ -74,6 +96,7 @@ services:
       - temporal
       - sandbox-image
       - credential-proxy
+      - egress-proxy
     networks:
       - default
     volumes:

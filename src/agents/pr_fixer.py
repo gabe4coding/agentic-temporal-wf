@@ -70,9 +70,19 @@ _ALLOWED_DOMAINS = [
 
 
 def build_options() -> ClaudeAgentOptions:
-    """Construct ClaudeAgentOptions for one agent iteration."""
-    proxy_url = os.environ.get(
-        "CREDENTIAL_PROXY_URL", "http://credential-proxy:8443"
+    """Construct ClaudeAgentOptions for one agent iteration.
+
+    Proxy routing — two URLs, two concerns:
+    - `HTTPS_PROXY` / `HTTP_PROXY` → tinyproxy CONNECT tunnel
+      (`$SANDBOX_EGRESS_PROXY_URL` or `egress-proxy:8888` default).
+      Used by the claude CLI for HTTPS to api.anthropic.com.
+    - `CREDENTIAL_PROXY_URL` → FastAPI service hosting `/__token`.
+      Read by GitHub MCP and any other sandbox-side client that needs
+      a short-lived token. Never set as `HTTPS_PROXY` — it doesn't
+      speak CONNECT.
+    """
+    egress_proxy = os.environ.get(
+        "SANDBOX_EGRESS_PROXY_URL", "http://egress-proxy:8888"
     )
     return ClaudeAgentOptions(
         system_prompt=INSTRUCTIONS,
@@ -107,7 +117,7 @@ def build_options() -> ClaudeAgentOptions:
         ],
         env={
             "CLAUDE_CODE_MAX_RETRIES": "0",
-            "HTTPS_PROXY": proxy_url,
-            "HTTP_PROXY": proxy_url,
+            "HTTPS_PROXY": egress_proxy,
+            "HTTP_PROXY": egress_proxy,
         },
     )
