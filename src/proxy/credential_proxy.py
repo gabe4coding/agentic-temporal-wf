@@ -69,6 +69,21 @@ def create_proxy_app(
             ),
         }
 
+    @app.get("/__token/{name}")
+    async def token(name: str):
+        """Per-iteration short-lived credential fetch.
+
+        The sandbox calls this endpoint at iteration start; the secret
+        lives only in the github-mcp-server child process's env, reaped
+        at iteration end. Static PAT today; GitHub App installation
+        token (1h TTL) is the documented follow-up (Open Question #2).
+        """
+        if name == "github":
+            return {"token": github_token, "ttl_s": 600}
+        if name == "anthropic":
+            return {"token": anthropic_key, "ttl_s": 600}
+        raise HTTPException(status_code=404, detail=f"unknown credential {name!r}")
+
     @app.get("/healthz")
     async def healthz():
         return {"status": "ok"}
