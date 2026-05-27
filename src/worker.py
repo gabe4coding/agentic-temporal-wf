@@ -11,6 +11,7 @@ from src.activities.lifecycle import (
     prepare_workdir,
     cleanup_workdir,
     post_status,
+    push_changes,
 )
 from src.activities.agent_iteration import run_agent_iteration
 from src.activities.sandbox import (
@@ -34,6 +35,16 @@ def _build_id() -> str:
     the worker version that started them. Falls back to 'dev' so local
     runs don't need extra env. CI sets WORKER_BUILD_ID=$GITHUB_SHA."""
     return os.environ.get("WORKER_BUILD_ID", "dev")
+
+
+def _use_versioning() -> bool:
+    """Worker Versioning must be enabled at the namespace level (Temporal
+    Cloud + `temporal operator namespace update --enable-worker-versioning`,
+    or `--enable-build-id-based-versioning` on a self-hosted cluster).
+    The bundled temporalio/auto-setup dev image does NOT enable it by
+    default, so trying to register a versioned worker there fails with
+    PermissionDenied. We opt-in via env; default off."""
+    return os.environ.get("USE_WORKER_VERSIONING", "0") == "1"
 
 
 def _data_converter():
@@ -73,6 +84,7 @@ async def main() -> None:
                 prepare_workdir,
                 cleanup_workdir,
                 post_status,
+                push_changes,
                 run_agent_iteration,
                 # Per-workflow sandbox activities. Registered but not yet
                 # wired into PRAutofixWorkflow — that integration is the
@@ -88,11 +100,11 @@ async def main() -> None:
             ],
             activity_executor=activity_executor,
             build_id=_build_id(),
-            use_worker_versioning=True,
+            use_worker_versioning=_use_versioning(),
         ):
             logging.info(
-                "worker listening on task queue %s build_id=%s",
-                task_queue, _build_id(),
+                "worker listening on task queue %s build_id=%s versioning=%s",
+                task_queue, _build_id(), _use_versioning(),
             )
             await asyncio.Event().wait()
 

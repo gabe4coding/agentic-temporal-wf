@@ -1,4 +1,4 @@
-"""Tests that the 4 command-execution functions in _local_repo_impl
+"""Tests that local command-execution functions in _local_repo_impl
 dispatch to exec_in_sandbox when given a SandboxHandle.
 
 We monkeypatch `_exec_in_sandbox_impl` with a recorder so the tests
@@ -109,58 +109,3 @@ def test_git_status_reports_dirty_when_porcelain_nonempty(exec_recorder, handle)
     ]
     s = impl.git_status(handle)
     assert s.dirty is True
-
-
-# ---------- git_commit_and_push ----------
-
-def test_git_commit_and_push_no_changes_dispatched_to_sandbox(
-    exec_recorder, handle
-):
-    exec_recorder.responses = [
-        ExecResult(exit_code=0, stdout="main\n"),       # rev-parse branch
-        ExecResult(exit_code=0, stdout=""),              # add -A
-        ExecResult(exit_code=0, stdout=""),              # diff --cached --quiet -> 0
-    ]
-    res = impl.git_commit_and_push(handle, "autofix: foo")
-    assert res.pushed is False
-    assert res.reason == "no_changes"
-
-
-def test_git_commit_and_push_success_flow_through_sandbox(
-    exec_recorder, handle
-):
-    sha = "a" * 40
-    exec_recorder.responses = [
-        ExecResult(exit_code=0, stdout="main\n"),       # rev-parse branch
-        ExecResult(exit_code=0, stdout=""),              # add -A
-        ExecResult(exit_code=1, stdout=""),              # diff --cached (has changes)
-        ExecResult(exit_code=0, stdout=""),              # commit
-        ExecResult(exit_code=0, stdout=f"{sha}\n"),      # rev-parse HEAD
-        ExecResult(exit_code=0, stdout=""),              # fetch
-        ExecResult(exit_code=0, stdout="0\n"),           # rev-list --count
-        ExecResult(exit_code=0, stdout=""),              # push
-    ]
-    res = impl.git_commit_and_push(handle, "autofix: x")
-    assert res.pushed is True
-    assert res.commit_sha == sha
-
-
-def test_git_commit_and_push_appends_autofix_trailer(exec_recorder, handle):
-    """The trailer must end up in the `git commit -m` invocation that
-    reaches the sandbox — that's the only thing the gateway can match."""
-    exec_recorder.responses = [
-        ExecResult(exit_code=0, stdout="main\n"),
-        ExecResult(exit_code=0, stdout=""),
-        ExecResult(exit_code=1, stdout=""),
-        ExecResult(exit_code=0, stdout=""),
-        ExecResult(exit_code=0, stdout="b" * 40 + "\n"),
-        ExecResult(exit_code=0, stdout=""),
-        ExecResult(exit_code=0, stdout="0\n"),
-        ExecResult(exit_code=0, stdout=""),
-    ]
-    impl.git_commit_and_push(handle, "autofix: y")
-
-    # 4th call is `git commit -m <message>`
-    _, commit_cmd = exec_recorder.calls[3]
-    assert commit_cmd[:3] == ["git", "commit", "-m"]
-    assert "[autofix-bot]" in commit_cmd[3]

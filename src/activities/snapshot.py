@@ -11,7 +11,6 @@ from __future__ import annotations
 import logging
 
 import docker
-from docker.errors import NotFound
 from temporalio import activity
 
 from src.models import SandboxHandle, SnapshotRef

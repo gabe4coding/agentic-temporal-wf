@@ -36,14 +36,14 @@ def _fail(name: str, reason: str) -> None:
 
 
 def check_anthropic_base_url_set() -> None:
-    """Worker compose env pins ANTHROPIC_BASE_URL (CVE-2026-21852)."""
+    """Sandbox requests are pinned to the trusted Anthropic relay."""
     compose = (_REPO_ROOT / "docker-compose.yml").read_text()
-    if "ANTHROPIC_BASE_URL" not in compose:
+    if "ANTHROPIC_RELAY_URL=http://capability-broker:8443/anthropic" not in compose:
         _fail(
-            "ANTHROPIC_BASE_URL pinned in compose",
-            "string not present in docker-compose.yml",
+            "Anthropic relay pinned in compose",
+            "broker relay route not present in docker-compose.yml",
         )
-    _ok("ANTHROPIC_BASE_URL pinned in compose")
+    _ok("Anthropic traffic routed through capability broker")
 
 
 def check_no_sensitive_paths_in_worker_image() -> None:
@@ -60,22 +60,10 @@ def check_no_sensitive_paths_in_worker_image() -> None:
 def check_allowed_tools_no_bash_write_webfetch() -> None:
     """Agent options exclude Bash/Write/WebFetch by policy."""
     sys.path.insert(0, str(_REPO_ROOT))
-    # Imports are deferred — env stubs needed for build_options.
-    os.environ.setdefault("GITHUB_TOKEN", "stub")
-    os.environ.setdefault("CREDENTIAL_PROXY_URL", "http://stub")
+    # Imports are deferred; the sandbox carries only an opaque capability.
+    os.environ.setdefault("RUN_CAPABILITY_TOKEN", "opaque-stub")
+    os.environ.setdefault("CAPABILITY_MCP_URL", "http://capability-broker:8443/mcp")
     import importlib
-
-    import httpx
-
-    class _Stub:
-        def __init__(self):
-            self.status_code = 200
-        def raise_for_status(self):
-            return None
-        def json(self):
-            return {"token": "stub", "ttl_s": 1}
-
-    httpx.get = lambda *a, **kw: _Stub()  # type: ignore[assignment]
     pr_fixer = importlib.import_module("src.agents.pr_fixer")
     opts = pr_fixer.build_options()
     if opts.permission_mode == "bypassPermissions":
@@ -116,12 +104,12 @@ def check_s3_payload_codec_wired() -> None:
 
 def check_worker_versioning_enabled() -> None:
     src = (_REPO_ROOT / "src/worker.py").read_text()
-    if "use_worker_versioning=True" not in src:
+    if "use_worker_versioning=_use_versioning()" not in src:
         _fail(
-            "Worker Versioning enabled",
-            "use_worker_versioning=True not found",
+            "Worker Versioning configurable",
+            "use_worker_versioning=_use_versioning() not found",
         )
-    _ok("Worker Versioning enabled")
+    _ok("Worker Versioning opt-in wired")
 
 
 def check_repo_allowlist_module_present() -> None:

@@ -11,17 +11,20 @@ with workflow.unsafe.imports_passed_through():
         WorkflowState,
         FixPlan,
         ApprovalRequest,
-        ApprovalDecision,
         ApprovalState,
+        OperationRequest,
+        OperationResult,
     )
     from src.activities.lifecycle import (
         prepare_workdir,
         cleanup_workdir,
         post_status,
+        push_changes,
     )
     from src.activities.agent_iteration import run_agent_iteration
     from src.activities.sandbox import provision_sandbox, teardown_sandbox
     from src.activities.approval import notify_human_for_approval
+    from src.activities.idempotency import push_operation_key
 
 
 MAX_ITERATIONS = 5
@@ -53,25 +56,76 @@ class PRAutofixWorkflow:
         return self._state
 
     @workflow.update
-    async def request_tool_approval(self, req: ApprovalRequest) -> ApprovalDecision:
-        """Durable HITL approval gate (Pattern-C rule 7).
-
-        The proxy issues this Update for side-effectful tool routes; the
-        handler stores the pending state, fires the notification activity,
-        then waits up to 24h for the human's Signal."""
-        self._approvals[req.approval_id] = ApprovalState(
-            approval_id=req.approval_id, pending=True
+    async def request_push_changes(self, request: OperationRequest) -> OperationResult:
+        """Approve and execute the workflow-bound publication operation once."""
+        key = push_operation_key(workflow.info().workflow_id, self._state.iterations)
+        prior = self._state.operations.get(key)
+        if prior is not None:
+            if prior.status == "pending":
+                await workflow.wait_condition(
+                    lambda: self._state.operations[key].status != "pending",
+                    timeout=timedelta(hours=24),
+                )
+            return self._state.operations[key]
+        approval_id = key
+        self._state.operations[key] = OperationResult(
+            operation_key=key, status="pending", approval_id=approval_id
+        )
+        self._approvals[approval_id] = ApprovalState(approval_id=approval_id, pending=True)
+        req = ApprovalRequest(
+            approval_id=approval_id,
+            tool_name="push_changes",
+            tool_input={"summary": request.summary, "commit_message": request.commit_message},
+            iteration=self._state.iterations,
         )
         await workflow.execute_activity(
             notify_human_for_approval,
             args=[self._state.pr.owner, self._state.pr.repo, self._state.pr.number, req],
             start_to_close_timeout=timedelta(minutes=1),
         )
-        await workflow.wait_condition(
-            lambda: self._approvals[req.approval_id].decided,
-            timeout=timedelta(hours=24),
+        try:
+            await workflow.wait_condition(
+                lambda: self._approvals[approval_id].decided,
+                timeout=timedelta(hours=24),
+            )
+        except asyncio.TimeoutError:
+            result = OperationResult(
+                operation_key=key,
+                status="denied",
+                approval_id=approval_id,
+                approval_decision=False,
+                reason="approval timed out",
+            )
+            self._state.operations[key] = result
+            self._approvals.pop(approval_id, None)
+            return result
+        decision = self._approvals.pop(approval_id).to_decision()
+        if not decision.allowed:
+            result = OperationResult(
+                operation_key=key,
+                status="denied",
+                approval_id=approval_id,
+                approval_decision=False,
+                reason=decision.reason,
+            )
+            self._state.operations[key] = result
+            return result
+        pushed = await workflow.execute_activity(
+            push_changes,
+            args=[self._state.pr, workflow.info().workflow_id, request.commit_message, key],
+            start_to_close_timeout=timedelta(minutes=2),
+            retry_policy=RetryPolicy(maximum_attempts=3),
         )
-        return self._approvals.pop(req.approval_id).to_decision()
+        result = OperationResult(
+            operation_key=key,
+            status="pushed" if pushed.pushed else "failed",
+            approval_id=approval_id,
+            approval_decision=True,
+            external_result_id=pushed.commit_sha,
+            reason=pushed.reason or "",
+        )
+        self._state.operations[key] = result
+        return result
 
     @workflow.signal
     def submit_approval_decision(self, payload: dict) -> None:
@@ -92,9 +146,7 @@ class PRAutofixWorkflow:
             self._state.pr,
             start_to_close_timeout=timedelta(minutes=5),
         )
-        # Spin the per-workflow sandbox up. It inherits the worker's /tmp
-        # via volumes_from, so the workdir just cloned is visible inside
-        # the sandbox at the same path.
+        # Spin up an untrusted sandbox with exactly this run workspace at /work.
         self._state.sandbox = await workflow.execute_activity(
             provision_sandbox,
             self._state.pr,

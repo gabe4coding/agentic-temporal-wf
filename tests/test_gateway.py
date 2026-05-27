@@ -1,7 +1,7 @@
 import hashlib
 import hmac
 import json
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -20,6 +20,9 @@ def _sign(body: bytes) -> str:
 @pytest.fixture
 def client_and_temporal():
     fake_client = AsyncMock()
+    fake_client.get_workflow_handle = MagicMock(
+        return_value=MagicMock(signal=AsyncMock())
+    )
     # Default fetcher returns "" so the self-trigger guard is a no-op
     # unless a test wants to exercise it explicitly.
     async def empty_fetcher(owner: str, repo: str, sha: str) -> str:
@@ -36,6 +39,7 @@ def client_and_temporal():
 @pytest.fixture(autouse=True)
 def _default_allowlist(monkeypatch):
     monkeypatch.setenv("ALLOWED_REPOS", "o/r")
+    monkeypatch.setenv("APPROVER_LOGINS", "maintainer")
 
 
 def test_rejects_bad_signature(client_and_temporal):
@@ -100,7 +104,7 @@ def test_pr_synchronize_from_autofix_bot_is_dropped():
     """Self-trigger guard: synchronize whose head commit message contains
     the AUTOFIX_COMMIT_TRAILER must not start a new workflow."""
     fake_client = AsyncMock()
-    from src.tools._local_repo_impl import AUTOFIX_COMMIT_TRAILER
+    from src.activities.lifecycle import AUTOFIX_COMMIT_TRAILER
 
     async def autofix_fetcher(owner: str, repo: str, sha: str) -> str:
         return f"fix: something\n\n{AUTOFIX_COMMIT_TRAILER}"
@@ -181,7 +185,8 @@ def test_issue_comment_on_pr_is_dropped(client_and_temporal):
     }
     import json
     body = json.dumps(payload).encode()
-    import hmac, hashlib
+    import hashlib
+    import hmac
     sig = "sha256=" + hmac.new(b"shh", body, hashlib.sha256).hexdigest()
     r = client.post(
         "/webhook",
@@ -194,6 +199,56 @@ def test_issue_comment_on_pr_is_dropped(client_and_temporal):
     )
     assert r.status_code == 204
     fake.start_workflow.assert_not_called()
+
+
+def test_authorized_approval_comment_signals_bound_workflow(client_and_temporal):
+    client, fake = client_and_temporal
+    payload = {
+        "action": "created",
+        "issue": {"number": 7, "pull_request": {"url": "..."}},
+        "comment": {
+            "body": "/autofix approve aabbccddeeff00112233445566778899",
+            "user": {"login": "maintainer"},
+        },
+        "repository": {"owner": {"login": "o"}, "name": "r"},
+    }
+    body = json.dumps(payload).encode()
+    response = client.post(
+        "/webhook",
+        headers={
+            "X-GitHub-Event": "issue_comment",
+            "X-GitHub-Delivery": "approve",
+            "X-Hub-Signature-256": _sign(body),
+        },
+        content=body,
+    )
+    assert response.status_code == 202
+    fake.get_workflow_handle.assert_called_once_with("pr-autofix-o-r-7")
+    fake.get_workflow_handle.return_value.signal.assert_awaited_once()
+
+
+def test_unauthorized_approval_comment_is_denied(client_and_temporal):
+    client, _ = client_and_temporal
+    payload = {
+        "action": "created",
+        "issue": {"number": 7, "pull_request": {"url": "..."}},
+        "comment": {
+            "body": "/autofix deny aabbccddeeff00112233445566778899 no",
+            "user": {"login": "outsider"},
+        },
+        "repository": {"owner": {"login": "o"}, "name": "r"},
+    }
+    body = json.dumps(payload).encode()
+    response = client.post(
+        "/webhook",
+        headers={
+            "X-GitHub-Event": "issue_comment",
+            "X-GitHub-Delivery": "deny",
+            "X-Hub-Signature-256": _sign(body),
+        },
+        content=body,
+    )
+    assert response.status_code == 403
 
 
 def _sig(secret: str, body: bytes) -> str:

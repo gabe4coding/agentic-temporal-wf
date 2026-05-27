@@ -6,12 +6,6 @@
         "hooks": [
           {"type": "command", "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/secret_scan.py", "timeout": 5}
         ]
-      },
-      {
-        "matcher": "mcp__repo__git_commit_and_push",
-        "hooks": [
-          {"type": "command", "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/signed_trailer_verify.py", "timeout": 5}
-        ]
       }
     ]
   }

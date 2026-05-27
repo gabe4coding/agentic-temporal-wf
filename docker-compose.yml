@@ -11,6 +11,8 @@ services:
       - postgres
     ports:
       - "7233:7233"
+    volumes:
+      - ./temporal-dynamicconfig.yaml:/etc/temporal/config/dynamicconfig/docker.yaml:ro
 
   postgres:
     image: postgres:15
@@ -43,14 +45,17 @@ services:
     entrypoint: ["true"]
     restart: "no"
 
-  credential-proxy:
-    # HTTP REST endpoints: /__token, /__inject_test, /__forward,
-    # /healthz. NOT an HTTPS forward proxy — that role is owned by
-    # egress-proxy (tinyproxy) below.
+  capability-broker:
+    # Trusted model relay and remote MCP server. Holds upstream
+    # credentials; sandboxes receive only opaque per-run capabilities.
     build:
       context: .
       dockerfile: src/proxy/Dockerfile
     env_file: .env
+    environment:
+      - CAPABILITY_BROKER_BOOT=1
+      - TEMPORAL_TARGET=temporal:7233
+      - BROKER_REGISTRATION_SECRET=${BROKER_REGISTRATION_SECRET}
     networks:
       - sandbox-net
       - default
@@ -90,8 +95,7 @@ services:
     # and any HTTPS client inside the sandbox uses
     # HTTPS_PROXY=http://egress-proxy:8888 to reach api.anthropic.com,
     # api.github.com, etc. The token-injection role lives on
-    # credential-proxy (separate concern). Full Pattern-C MITM
-    # injection is Open Question #1.
+    # broker owns all credentialed external API calls.
     build:
       context: ./sandbox/egress-proxy
     image: agent-sandbox-egress-proxy:latest
@@ -113,10 +117,11 @@ services:
       # HTTPS CONNECT tunnel for sandbox egress (FQDN allowlist).
       # provision_sandbox stamps this into HTTPS_PROXY/HTTP_PROXY.
       - SANDBOX_EGRESS_PROXY_URL=http://egress-proxy:8888
-      # Credential-proxy HTTP endpoints (token fetch + future HITL gate).
-      - CREDENTIAL_PROXY_URL=http://credential-proxy:8443
-      # CVE-2026-21852 mitigation: pin API base URL.
-      - ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL:-https://api.anthropic.com}
+      - CAPABILITY_BROKER_URL=http://capability-broker:8443
+      - CAPABILITY_MCP_URL=http://capability-broker:8443/mcp
+      - ANTHROPIC_RELAY_URL=http://capability-broker:8443/anthropic
+      - BROKER_REGISTRATION_SECRET=${BROKER_REGISTRATION_SECRET}
+      - WORKSPACE_ROOT=${WORKSPACE_ROOT}
       - ALLOWED_REPOS=${ALLOWED_REPOS}
       # Pattern-C Worker Versioning: pin in-flight Workflows to the
       # worker version that started them. CI sets $GITHUB_SHA.
@@ -135,17 +140,14 @@ services:
     depends_on:
       - temporal
       - sandbox-image
-      - credential-proxy
+      - capability-broker
       - egress-proxy
     networks:
       - default
     volumes:
-      # Persist workdirs across container restarts. The workflow's
-      # prepare_workdir activity clones into /tmp/autofix-{workflow_id}/repo
-      # and later tool calls (read_file, run_pytest, git_commit_and_push)
-      # expect the clone to still be there. Without this volume, any restart
-      # wipes /tmp and the agent's tool calls fail with ENOENT.
-      - worker_tmp:/tmp
+      # Dedicated host workspace root. Each untrusted sibling receives
+      # only its individual `${WORKSPACE_ROOT}/autofix-*/repo` at `/work`.
+      - ${WORKSPACE_ROOT}:${WORKSPACE_ROOT}
       # Per-workflow sandbox: the worker spawns sibling containers via
       # the host's docker daemon. Sock mount = worker has root-equivalent
       # on the host; acceptable for the PoC, NOT for shared infra.
@@ -158,6 +160,7 @@ services:
       - TEMPORAL_TARGET=temporal:7233
       - GATEWAY_BOOT=1
       - ALLOWED_REPOS=${ALLOWED_REPOS}
+      - APPROVER_LOGINS=${APPROVER_LOGINS}
     depends_on:
       - temporal
     command: ["uv", "run", "uvicorn", "src.gateway.app:app", "--host", "0.0.0.0", "--port", "8000"]
@@ -168,10 +171,9 @@ networks:
   sandbox-net:
     driver: bridge
     # Internal-only: containers on this network have NO direct route to
-    # the outside. Egress goes through the credential-proxy service, which
-    # enforces an FQDN allow-list and injects real credentials.
+    # the outside. Broker endpoints provide credentialed upstream calls;
+    # the optional egress proxy permits only non-credentialed dependencies.
     internal: true
 
 volumes:
   temporal_pg:
-  worker_tmp:

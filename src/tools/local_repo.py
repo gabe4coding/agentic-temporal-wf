@@ -16,6 +16,7 @@ This is necessary because `claude_agent_sdk.tool(...)` is *not* a pass-through
 decorator — it returns an `SdkMcpTool` instance which is not itself awaitable.
 """
 import json
+from typing import NotRequired, TypedDict
 
 from claude_agent_sdk import tool, create_sdk_mcp_server
 
@@ -44,6 +45,10 @@ def _exec_target():
     """
     handle = get_sandbox_handle()
     return handle if handle is not None else workdir_root_from_env()
+
+
+class RunPytestInput(TypedDict):
+    target: NotRequired[str]
 
 
 # ---------- read_file ----------
@@ -114,7 +119,7 @@ async def _run_pytest_impl(args: dict) -> dict:
 run_pytest_tool = tool(
     "run_pytest",
     "Run pytest in the working copy. Optional target (file::test). Returns a JSON PytestResult.",
-    {"target": str},
+    RunPytestInput,
 )(_run_pytest_impl)
 
 
@@ -131,22 +136,6 @@ git_status_tool = tool(
 )(_git_status_impl)
 
 
-# ---------- git_commit_and_push ----------
-
-async def _git_commit_and_push_impl(args: dict) -> dict:
-    result = impl.git_commit_and_push(_exec_target(), args["message"])
-    return _text(result.model_dump())
-
-
-git_commit_and_push_tool = tool(
-    "git_commit_and_push",
-    "Stage all changes, commit with the given message, fetch, refuse if remote advanced, "
-    "push. Returns a JSON CommitResult. The commit message is automatically tagged with "
-    "the [autofix-bot] trailer.",
-    {"message": str},
-)(_git_commit_and_push_impl)
-
-
 # ---------- server ----------
 
 local_repo_mcp_server = create_sdk_mcp_server(
@@ -159,6 +148,5 @@ local_repo_mcp_server = create_sdk_mcp_server(
         run_ruff_tool,
         run_pytest_tool,
         git_status_tool,
-        git_commit_and_push_tool,
     ],
 )

@@ -1,192 +1,165 @@
-"""Worker-side credential / MCP proxy.
+"""Trusted capability broker and Anthropic relay for untrusted sandboxes.
 
-Pattern-C trust boundary:
-- The sandbox container talks to *this* service via HTTPS_PROXY.
-- This service holds the real Vault-loaded credentials (GitHub PAT,
-  Anthropic API key) and injects them based on the destination host.
-- A FQDN allowlist is the L0 network policy. Anything outside the list
-  returns 403.
-- The HITL approval gate (Phase 6) plugs in here: for a small set of
-  side-effectful tool routes (git push, github writes, deploy), the
-  proxy issues a Workflow Update via the Temporal client and waits for
-  the Signal before forwarding.
-
-The unit-test surface (`/__inject_test`) lets us verify the injection
-logic without a forward-proxy hop. The real HTTPS forward-proxy hop is
-exercised by tests/test_credential_proxy_forward.py (Docker integration,
-Phase 4.2).
+The broker holds GitHub and Anthropic credentials. A sandbox gets only a
+random run token registered by the trusted provisioner. The token resolves to
+one workflow and PR, so MCP arguments cannot redirect reads or publication.
 """
 from __future__ import annotations
 
-import logging
+from datetime import UTC, datetime
 import os
-import re
-import uuid
-from dataclasses import dataclass
-from typing import Iterable
+from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request
+import httpx
+from fastapi import FastAPI, Header, HTTPException, Request, Response
 
-
-logger = logging.getLogger(__name__)
+from src.models import CapabilityBinding, OperationRequest
 
 
-@dataclass
-class _InjectionResult:
-    allowed: bool
-    injected: dict[str, str]
+class CapabilityRegistry:
+    def __init__(self) -> None:
+        self._bindings: dict[str, CapabilityBinding] = {}
+
+    def register(self, token: str, binding: CapabilityBinding) -> None:
+        self._bindings[token] = binding
+
+    def resolve(self, token: str, capability: str) -> CapabilityBinding:
+        binding = self._bindings.get(token)
+        if binding is None or binding.expires_at <= datetime.now(UTC):
+            raise HTTPException(status_code=401, detail="invalid or expired run capability")
+        if capability not in binding.capabilities:
+            raise HTTPException(status_code=403, detail=f"capability {capability} not permitted")
+        return binding
 
 
-def _injection_for(
-    host: str, *, github_token: str, anthropic_key: str
-) -> dict[str, str]:
-    h = host.lower()
-    if h == "api.github.com" or h == "github.com" or h.endswith(".github.com"):
-        return {"authorization": f"Bearer {github_token}"}
-    if h == "api.anthropic.com":
-        return {
-            "x-api-key": anthropic_key,
-            "anthropic-version": "2023-06-01",
-        }
-    return {}
+def _run_token(request: Request) -> str:
+    auth = request.headers.get("authorization", "")
+    token = auth.removeprefix("Bearer ").strip() if auth.startswith("Bearer ") else ""
+    return token or request.headers.get("x-api-key", "") or request.headers.get("x-run-capability-token", "")
 
 
-# ---------- HITL gate (Pattern-C rule 7) ----------
-#
-# Routes that change real state and therefore require a human approval
-# before the proxy forwards them. Patterns are matched against
-# {method} {host}{path}. Keep the list tight — every entry is one human
-# interrupt per call.
-_GATED_ROUTES: list[re.Pattern[str]] = [
-    # GitHub: pushing to a ref, deleting a ref, creating a release.
-    re.compile(r"^POST api\.github\.com/repos/[^/]+/[^/]+/git/refs$"),
-    re.compile(r"^DELETE api\.github\.com/repos/[^/]+/[^/]+/git/refs/.+$"),
-    re.compile(r"^POST api\.github\.com/repos/[^/]+/[^/]+/releases$"),
-    # Branch protection / collaborators / settings.
-    re.compile(
-        r"^PUT api\.github\.com/repos/[^/]+/[^/]+/branches/[^/]+/protection$"
-    ),
-    re.compile(r"^PUT api\.github\.com/repos/[^/]+/[^/]+/collaborators/.+$"),
-]
+async def _github_get(github_token: str, path: str) -> Any:
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        response = await client.get(
+            f"https://api.github.com{path}",
+            headers={
+                "Authorization": f"Bearer {github_token}",
+                "Accept": "application/vnd.github+json",
+            },
+        )
+        response.raise_for_status()
+        return response.json()
 
 
-def gated_route_matches(method: str, host: str, path: str) -> bool:
-    """Return True iff (method, host, path) is on the HITL gate list."""
-    line = f"{method.upper()} {host.lower()}{path}"
-    return any(p.search(line) for p in _GATED_ROUTES)
-
-
-async def _request_approval(
-    workflow_id: str,
-    *,
-    method: str,
-    host: str,
-    path: str,
-    temporal_target: str | None = None,
-):
-    """Issue the Workflow Update for HITL approval and return the
-    decision.
-
-    The Temporal client is imported lazily so unit tests that don't go
-    through this path don't pay the import cost. If
-    `temporal_target` is None, falls back to the env var
-    `TEMPORAL_TARGET`. Returns the ApprovalDecision-shaped dict the
-    workflow handler resolves to."""
+async def _request_push_update(workflow_id: str, request: OperationRequest):
     from temporalio.client import Client
 
-    from src.models import ApprovalRequest
-
-    target = temporal_target or os.environ["TEMPORAL_TARGET"]
-    client = await Client.connect(target)
-    handle = client.get_workflow_handle(workflow_id)
-    req = ApprovalRequest(
-        approval_id=uuid.uuid4().hex,
-        tool_name=f"{method.upper()} {host}{path}",
-        tool_input={"host": host, "path": path, "method": method.upper()},
-        iteration=0,
+    client = await Client.connect(os.environ["TEMPORAL_TARGET"])
+    return await client.get_workflow_handle(workflow_id).execute_update(
+        "request_push_changes", request
     )
-    decision = await handle.execute_update("request_tool_approval", req)
-    return decision
 
 
 def create_proxy_app(
     *,
     github_token: str,
     anthropic_key: str,
-    allowed_hosts: Iterable[str],
+    allowed_hosts: set[str] | None = None,
+    registration_secret: str = "",
+    registry: CapabilityRegistry | None = None,
 ) -> FastAPI:
-    app = FastAPI(title="agent-temporal credential proxy")
-    allowed = {h.lower() for h in allowed_hosts}
+    """Create the trusted broker app.
 
-    @app.post("/__inject_test")
-    async def inject_test(req: Request):
-        body = await req.json()
-        host = (body.get("host") or "").lower()
-        if host not in allowed and not any(
-            host.endswith(f".{a}") for a in allowed
-        ):
-            raise HTTPException(status_code=403, detail=f"host {host} not allowed")
-        return {
-            "allowed": True,
-            "injected": _injection_for(
-                host, github_token=github_token, anthropic_key=anthropic_key
-            ),
+    `allowed_hosts` remains accepted for compatibility with older deployment
+    wiring; broker endpoints expose only fixed upstream destinations.
+    """
+    del allowed_hosts
+    app = FastAPI(title="agent-temporal capability broker")
+    bindings = registry or CapabilityRegistry()
+
+    @app.post("/bindings", status_code=201)
+    async def register_binding(
+        request: Request,
+        x_broker_registration_secret: str = Header(default=""),
+    ):
+        if not registration_secret:
+            raise HTTPException(status_code=503, detail="broker registration not configured")
+        if x_broker_registration_secret != registration_secret:
+            raise HTTPException(status_code=403, detail="registration denied")
+        body = await request.json()
+        token = body.get("token", "")
+        if len(token) < 20:
+            raise HTTPException(status_code=400, detail="invalid opaque token")
+        bindings.register(token, CapabilityBinding.model_validate(body["binding"]))
+        return {"registered": True}
+
+    @app.api_route("/anthropic/{path:path}", methods=["POST", "GET"])
+    async def anthropic_relay(path: str, request: Request):
+        bindings.resolve(_run_token(request), "model.invoke")
+        if not (path == "v1/messages" or path.startswith("v1/messages/")):
+            raise HTTPException(status_code=404, detail="unsupported Anthropic path")
+        headers = {
+            "x-api-key": anthropic_key,
+            "anthropic-version": request.headers.get("anthropic-version", "2023-06-01"),
+            "content-type": request.headers.get("content-type", "application/json"),
         }
-
-    @app.post("/__forward")
-    async def forward(req: Request):
-        """Stub forward endpoint exercising the gate.
-
-        Real HTTPS CONNECT tunneling is Open Question #1. For HITL, the
-        path that matters is: extract (method, host, path) from the
-        request body, check `gated_route_matches`, and if it gates,
-        block on the Workflow Update before forwarding. The body is a
-        JSON object: `{host, method, path, workflow_id}`."""
-        body = await req.json()
-        host = (body.get("host") or "").lower()
-        method = (body.get("method") or "GET").upper()
-        path = body.get("path") or "/"
-        wf_id = body.get("workflow_id")
-        if host not in allowed and not any(host.endswith(f".{a}") for a in allowed):
-            raise HTTPException(status_code=403, detail=f"host {host} not allowed")
-        if gated_route_matches(method, host, path):
-            if not wf_id:
-                raise HTTPException(
-                    status_code=428,
-                    detail="gated route requires X-TheFork-Workflow-Id (workflow_id)",
-                )
-            decision = await _request_approval(
-                wf_id, method=method, host=host, path=path
+        if beta := request.headers.get("anthropic-beta"):
+            headers["anthropic-beta"] = beta
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            upstream = await client.request(
+                request.method,
+                f"https://api.anthropic.com/{path}",
+                content=await request.body(),
+                headers=headers,
+                params=request.query_params,
             )
-            if not getattr(decision, "allowed", False):
-                raise HTTPException(
-                    status_code=403,
-                    detail=f"denied by human: {getattr(decision, 'reason', '')}",
-                )
-        return {
-            "would_forward": True,
-            "host": host,
-            "method": method,
-            "path": path,
-            "injected": _injection_for(
-                host, github_token=github_token, anthropic_key=anthropic_key
-            ),
-        }
+        return Response(
+            content=upstream.content,
+            status_code=upstream.status_code,
+            media_type=upstream.headers.get("content-type"),
+        )
 
-    @app.get("/__token/{name}")
-    async def token(name: str):
-        """Per-iteration short-lived credential fetch.
-
-        The sandbox calls this endpoint at iteration start; the secret
-        lives only in the github-mcp-server child process's env, reaped
-        at iteration end. Static PAT today; GitHub App installation
-        token (1h TTL) is the documented follow-up (Open Question #2).
-        """
-        if name == "github":
-            return {"token": github_token, "ttl_s": 600}
-        if name == "anthropic":
-            return {"token": anthropic_key, "ttl_s": 600}
-        raise HTTPException(status_code=404, detail=f"unknown credential {name!r}")
+    @app.post("/mcp")
+    async def mcp(request: Request):
+        binding = bindings.resolve(_run_token(request), "source.read")
+        message = await request.json()
+        method = message.get("method")
+        request_id = message.get("id")
+        if method == "initialize":
+            return {"jsonrpc": "2.0", "id": request_id, "result": {"protocolVersion": "2025-03-26", "capabilities": {"tools": {}}, "serverInfo": {"name": "capability-broker", "version": "1.0"}}}
+        if method == "notifications/initialized":
+            return Response(status_code=202)
+        if method == "tools/list":
+            return {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {"tools": [
+                    {"name": "get_pr_context", "description": "Read the bound pull request.", "inputSchema": {"type": "object", "properties": {}}},
+                    {"name": "list_review_comments", "description": "Read review comments for the bound pull request.", "inputSchema": {"type": "object", "properties": {}}},
+                    {"name": "list_check_results", "description": "Read checks for the bound PR head.", "inputSchema": {"type": "object", "properties": {}}},
+                    {"name": "request_push_changes", "description": "Request approved publication of local edits.", "inputSchema": {"type": "object", "properties": {"summary": {"type": "string"}, "commit_message": {"type": "string"}}, "required": ["summary", "commit_message"]}},
+                ]},
+            }
+        if method != "tools/call":
+            raise HTTPException(status_code=404, detail="unsupported MCP method")
+        params = message.get("params") or {}
+        name = params.get("name")
+        args = params.get("arguments") or {}
+        owner, repo = binding.repository.split("/", 1)
+        if name == "get_pr_context":
+            result = await _github_get(github_token, f"/repos/{owner}/{repo}/pulls/{binding.pr_number}")
+        elif name == "list_review_comments":
+            result = await _github_get(github_token, f"/repos/{owner}/{repo}/pulls/{binding.pr_number}/comments")
+        elif name == "list_check_results":
+            pr = await _github_get(github_token, f"/repos/{owner}/{repo}/pulls/{binding.pr_number}")
+            result = await _github_get(github_token, f"/repos/{owner}/{repo}/commits/{pr['head']['sha']}/check-runs")
+        elif name == "request_push_changes":
+            bindings.resolve(_run_token(request), "changes.publish")
+            result = await _request_push_update(binding.workflow_id, OperationRequest.model_validate(args))
+            result = result.model_dump(mode="json") if hasattr(result, "model_dump") else result
+        else:
+            raise HTTPException(status_code=404, detail="tool not exposed")
+        return {"jsonrpc": "2.0", "id": request_id, "result": {"content": [{"type": "text", "text": __import__("json").dumps(result)}]}}
 
     @app.get("/healthz")
     async def healthz():
@@ -199,15 +172,8 @@ def build_default_app() -> FastAPI:
     return create_proxy_app(
         github_token=os.environ["GITHUB_TOKEN"],
         anthropic_key=os.environ["ANTHROPIC_API_KEY"],
-        allowed_hosts={
-            "api.github.com",
-            "github.com",
-            "raw.githubusercontent.com",
-            "api.anthropic.com",
-            "pypi.org",
-            "files.pythonhosted.org",
-        },
+        registration_secret=os.environ.get("BROKER_REGISTRATION_SECRET", ""),
     )
 
 
-app = build_default_app() if os.environ.get("CREDENTIAL_PROXY_BOOT") == "1" else None
+app = build_default_app() if os.environ.get("CAPABILITY_BROKER_BOOT") == "1" else None

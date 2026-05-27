@@ -27,15 +27,15 @@ You are an autonomous code-review assistant working on one GitHub Pull Request.
 You receive: a short brief listing pending events (new review comments, CI \
 results) and the PR identifier. For each event:
 
-1. Use the `github` MCP toolset to fetch full context (PR diff, comment \
+1. Use the `capability` MCP toolset to fetch full context (PR diff, comment \
    bodies, check run details).
 2. Decide whether the event is a valid, actionable engineering request.
 3. If yes, use the `repo` MCP toolset OR the builtin Read/Edit/Grep/Glob \
    tools to inspect the code, apply the smallest possible edit, and \
    verify locally with `mcp__repo__run_ruff` and `mcp__repo__run_pytest`.
-4. Only call `mcp__repo__git_commit_and_push` if local verification \
-   passes. If the push is refused (`remote_advanced` etc.), do NOT retry \
-   blindly; report it as `blocking_reason`.
+4. Only call `mcp__capability__request_push_changes` if local verification \
+   passes. Publication is performed by the trusted workflow after human \
+   approval; no sandbox tool may commit or push directly.
 5. If a comment is opinion-only, unclear, or out of scope, do not apply \
    it. Explain in `summary` why you skipped it.
 
@@ -56,14 +56,10 @@ last JSON-shaped line of your output.
 """
 
 
-# Domains the agent is allowed to reach. The credential proxy enforces
-# this too (defense in depth — the SDK-native block is L1/L2, the proxy
-# is L0).
+# Network destinations visible to the SDK sandbox. Upstream APIs are reached
+# only through the trusted capability broker.
 _ALLOWED_DOMAINS = [
-    "api.github.com",
-    "github.com",
-    "raw.githubusercontent.com",
-    "api.anthropic.com",
+    "capability-broker",
     "pypi.org",
     "files.pythonhosted.org",
 ]
@@ -72,14 +68,8 @@ _ALLOWED_DOMAINS = [
 def build_options() -> ClaudeAgentOptions:
     """Construct ClaudeAgentOptions for one agent iteration.
 
-    Proxy routing — two URLs, two concerns:
-    - `HTTPS_PROXY` / `HTTP_PROXY` → tinyproxy CONNECT tunnel
-      (`$SANDBOX_EGRESS_PROXY_URL` or `egress-proxy:8888` default).
-      Used by the claude CLI for HTTPS to api.anthropic.com.
-    - `CREDENTIAL_PROXY_URL` → FastAPI service hosting `/__token`.
-      Read by GitHub MCP and any other sandbox-side client that needs
-      a short-lived token. Never set as `HTTPS_PROXY` — it doesn't
-      speak CONNECT.
+    The Claude subprocess sends its opaque run token to the trusted model
+    relay in the API-key slot; that value is not an Anthropic credential.
     """
     egress_proxy = os.environ.get(
         "SANDBOX_EGRESS_PROXY_URL", "http://egress-proxy:8888"
@@ -118,10 +108,11 @@ def build_options() -> ClaudeAgentOptions:
             "OTEL_LOG_TOOL_DETAILS": "1",
             "OTEL_LOG_TOOL_CONTENT": "1",
         }
+    run_token = os.environ["RUN_CAPABILITY_TOKEN"]
     return ClaudeAgentOptions(
         system_prompt=INSTRUCTIONS,
         mcp_servers={
-            "github": build_github_mcp_config(),
+            "capability": build_github_mcp_config(),
             "repo": local_repo_mcp_server,
         },
         allowed_tools=[
@@ -129,7 +120,7 @@ def build_options() -> ClaudeAgentOptions:
             "Edit",
             "Grep",
             "Glob",
-            "mcp__github__*",
+            "mcp__capability__*",
             "mcp__repo__*",
         ],
         disallowed_tools=["Bash", "Write", "WebFetch"],
@@ -151,6 +142,10 @@ def build_options() -> ClaudeAgentOptions:
         ],
         env={
             "CLAUDE_CODE_MAX_RETRIES": "0",
+            "ANTHROPIC_API_KEY": run_token,
+            "ANTHROPIC_BASE_URL": os.environ.get(
+                "ANTHROPIC_BASE_URL", "http://capability-broker:8443/anthropic"
+            ),
             "HTTPS_PROXY": egress_proxy,
             "HTTP_PROXY": egress_proxy,
             **cli_otel_env,

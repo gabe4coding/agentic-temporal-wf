@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import os
+import re
 from typing import Any, Awaitable, Callable
 
 import httpx
@@ -9,11 +10,15 @@ from temporalio.common import WorkflowIDReusePolicy
 
 from src.models import GitHubEvent, PRRef
 from src.repo_allowlist import RepoAllowlist, RepoDenied
-from src.tools._local_repo_impl import AUTOFIX_COMMIT_TRAILER
+from src.activities.lifecycle import AUTOFIX_COMMIT_TRAILER
 from src.workflows.pr_autofix import PRAutofixWorkflow
 
 
 CommitMessageFetcher = Callable[[str, str, str], Awaitable[str]]
+_APPROVAL_COMMAND = re.compile(
+    r"^\s*/autofix\s+(approve|deny)\s+([a-f0-9]{16,64})(?:\s+(.+))?\s*$",
+    re.IGNORECASE,
+)
 
 
 async def _fetch_commit_message(owner: str, repo: str, sha: str) -> str:
@@ -129,6 +134,38 @@ def create_app(
 
         import json as _json
         payload = _json.loads(body) if body else {}
+
+        if x_github_event == "issue_comment" and payload.get("action") == "created":
+            issue = payload.get("issue") or {}
+            command = _APPROVAL_COMMAND.match((payload.get("comment") or {}).get("body", ""))
+            if command and "pull_request" in issue:
+                approvers = {
+                    value.strip()
+                    for value in os.environ.get("APPROVER_LOGINS", "").split(",")
+                    if value.strip()
+                }
+                login = ((payload.get("comment") or {}).get("user") or {}).get("login", "")
+                if login not in approvers:
+                    raise HTTPException(status_code=403, detail="approval author not authorized")
+                owner = payload["repository"]["owner"]["login"]
+                repo = payload["repository"]["name"]
+                try:
+                    RepoAllowlist.from_env().check(owner, repo)
+                except RepoDenied as e:
+                    raise HTTPException(status_code=403, detail=str(e))
+                action, approval_id, reason = command.groups()
+                handle = temporal_client.get_workflow_handle(
+                    f"pr-autofix-{owner}-{repo}-{issue['number']}"
+                )
+                await handle.signal(
+                    "submit_approval_decision",
+                    {
+                        "approval_id": approval_id,
+                        "allowed": action.lower() == "approve",
+                        "reason": reason or "",
+                    },
+                )
+                return Response(status_code=202)
         projected = _project_event(x_github_event, payload, x_github_delivery)
         if projected is None:
             return Response(status_code=204)

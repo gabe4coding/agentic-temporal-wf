@@ -5,7 +5,7 @@ from temporalio import activity
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
-from src.models import PRRef, GitHubEvent, WorkflowState, FixPlan, SandboxHandle
+from src.models import CommitResult, PRRef, GitHubEvent, WorkflowState, FixPlan, SandboxHandle
 from src.workflows.pr_autofix import PRAutofixWorkflow
 
 
@@ -35,6 +35,11 @@ async def stub_post_status(state: WorkflowState, plan: FixPlan) -> WorkflowState
     state.posted_status_comment_id = state.posted_status_comment_id or 999
     state.last_check_run_id = 42
     return state
+
+
+@activity.defn(name="push_changes")
+async def stub_push_changes(_pr, _workflow_id, _message, _key) -> CommitResult:
+    return CommitResult(pushed=True, commit_sha="stub-sha")
 
 
 @activity.defn(name="run_agent_iteration")
@@ -67,6 +72,7 @@ async def test_workflow_processes_event_and_returns(env: WorkflowEnvironment):
             stub_provision_sandbox,
             stub_teardown_sandbox,
             stub_post_status,
+            stub_push_changes,
             stub_run_agent_iteration,
         ],
     ):

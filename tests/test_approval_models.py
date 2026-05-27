@@ -1,4 +1,5 @@
 from src.models import ApprovalDecision, ApprovalRequest, ApprovalState
+from src.activities.approval import _render_approval_comment
 
 
 def test_approval_state_pending_is_undecided():
@@ -30,3 +31,15 @@ def test_approval_decision_default_is_deny():
     d = ApprovalDecision(allowed=False, reason="policy")
     assert d.allowed is False
     assert d.modified_input is None
+
+
+def test_approval_comment_contains_resolvable_commands():
+    req = ApprovalRequest(
+        approval_id="aabbccddeeff00112233445566778899",
+        tool_name="push_changes",
+        tool_input={"summary": "fixed"},
+        iteration=1,
+    )
+    body = _render_approval_comment(req)
+    assert "/autofix approve aabbccddeeff00112233445566778899" in body
+    assert "/autofix deny aabbccddeeff00112233445566778899 <reason>" in body

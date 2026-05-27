@@ -5,11 +5,8 @@ These tests monkeypatch `docker.from_env` with an in-process fake so they
 run without a daemon. A separate marker (`@pytest.mark.integration`) is
 reserved for tests that need a real Docker socket — not implemented here.
 
-Design note (hybrid bind-mount): provision_sandbox does NOT clone the
-repo. It inherits the worker's /tmp volume via `volumes_from=[worker]`
-so the workdir prepared by prepare_workdir (host path
-`/tmp/autofix-{wf}/repo`) is visible inside the sandbox at the same
-path. The workflow_id-scoped workdir is the SandboxHandle.workdir.
+Design note: provision_sandbox binds only the prepared per-run
+repository to `/work`; it does not inherit trusted worker mounts.
 """
 from __future__ import annotations
 
@@ -105,19 +102,17 @@ def test_provision_sandbox_runs_container_with_hardened_args(fake_docker):
     assert kwargs["pids_limit"] == 256
     # Sandbox keeps running until teardown
     assert kwargs["command"] == ["sleep", "infinity"]
-    # Handle exposes the workflow-scoped workdir (same path on host & sandbox
-    # thanks to volumes_from inheritance below)
+    assert kwargs["volumes"] == {
+        "/tmp/autofix-wf-xyz/repo": {"bind": "/work", "mode": "rw"}
+    }
+    assert "volumes_from" not in kwargs
     assert handle.container_id == "sbx-cid-abc"
-    assert handle.workdir == "/tmp/autofix-wf-xyz/repo"
+    assert handle.workdir == "/work"
 
 
-def test_provision_sandbox_inherits_worker_mounts_via_volumes_from(
+def test_provision_sandbox_never_inherits_worker_mounts(
     fake_docker, monkeypatch: pytest.MonkeyPatch
 ):
-    """The sandbox must see the worker's /tmp volume so the workdir
-    prepared by prepare_workdir (host path) resolves identically inside
-    the sandbox. We achieve that via Docker's `volumes_from` referencing
-    the worker container name (HOSTNAME inside the worker)."""
     from src.activities.sandbox import _provision_sandbox_impl
 
     monkeypatch.setenv("HOSTNAME", "worker-container-name")
@@ -127,25 +122,18 @@ def test_provision_sandbox_inherits_worker_mounts_via_volumes_from(
     )
 
     _, kwargs = fake_docker.containers.run_calls[0]
-    assert kwargs["volumes_from"] == ["worker-container-name"]
+    assert "volumes_from" not in kwargs
+    assert list(kwargs["volumes"].values()) == [{"bind": "/work", "mode": "rw"}]
 
 
-def test_provision_sandbox_injects_credential_proxy_env(
+def test_provision_sandbox_injects_broker_capability_env(
     fake_docker, monkeypatch: pytest.MonkeyPatch
 ):
-    """When SANDBOX_EGRESS_PROXY_URL is set, the sandbox container must
-    receive HTTP_PROXY/HTTPS_PROXY so git/curl/httpx route through the
-    credential proxy on the internal sandbox-net.
-
-    Also: CREDENTIAL_PROXY_URL is always set (sandbox clients use it to
-    fetch tokens). NO_PROXY excludes the proxy itself and api.anthropic.com
-    (Open Question #1 — until mitmproxy MITM ships, the Anthropic API
-    call cannot go through this proxy)."""
+    """The sandbox gets broker routes and an opaque token, never API secrets."""
     from src.activities.sandbox import _provision_sandbox_impl
 
     monkeypatch.setenv("SANDBOX_EGRESS_PROXY_URL", "http://egress-proxy:8888")
-    monkeypatch.setenv("CREDENTIAL_PROXY_URL", "http://credential-proxy:8443")
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("CAPABILITY_BROKER_URL", "http://capability-broker:8443")
 
     _provision_sandbox_impl(
         workflow_id="wf-2", host_workdir="/tmp/autofix-wf-2/repo"
@@ -156,39 +144,44 @@ def test_provision_sandbox_injects_credential_proxy_env(
     assert env["HTTPS_PROXY"] == "http://egress-proxy:8888"
     assert env["HTTP_PROXY"] == "http://egress-proxy:8888"
     assert env["https_proxy"] == "http://egress-proxy:8888"
-    # CREDENTIAL_PROXY_URL is the token endpoint (separate service).
-    assert env["CREDENTIAL_PROXY_URL"] == "http://credential-proxy:8443"
-    # AUTOFIX_WORKDIR_ID lets the SDK-MCP tools resolve /tmp/autofix-*/repo.
+    assert env["CAPABILITY_MCP_URL"] == "http://capability-broker:8443/mcp"
+    assert env["ANTHROPIC_BASE_URL"] == "http://capability-broker:8443/anthropic"
+    assert env["RUN_CAPABILITY_TOKEN"]
+    assert "GITHUB_TOKEN" not in env
+    assert "GITHUB_PERSONAL_ACCESS_TOKEN" not in env
+    assert "ANTHROPIC_API_KEY" not in env
+    assert env["AUTOFIX_WORKDIR"] == "/work"
     assert env["AUTOFIX_WORKDIR_ID"] == "wf-2"
     # NO_PROXY excludes the proxies themselves (avoid recursion) +
     # loopback. api.anthropic.com goes through the tunnel.
     assert "egress-proxy" in env["NO_PROXY"]
-    assert "credential-proxy" in env["NO_PROXY"]
+    assert "capability-broker" in env["NO_PROXY"]
     assert "127.0.0.1" in env["NO_PROXY"]
 
 
-def test_provision_sandbox_ships_anthropic_key_when_present(
+def test_provision_sandbox_does_not_ship_anthropic_key_when_present(
     fake_docker, monkeypatch: pytest.MonkeyPatch
 ):
-    """Open Question #1 concession: ANTHROPIC_API_KEY is shipped into
-    the sandbox env because the current credential-proxy is not an
-    HTTPS-MITM and cannot inject the key at the boundary."""
     from src.activities.sandbox import _provision_sandbox_impl
 
-    monkeypatch.setenv("SANDBOX_EGRESS_PROXY_URL", "http://credential-proxy:8443")
+    monkeypatch.setenv("SANDBOX_EGRESS_PROXY_URL", "http://egress-proxy:8888")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    monkeypatch.setenv("GITHUB_TOKEN", "github-test")
+    monkeypatch.setenv("ARIZE_API_KEY", "arize-test")
+    monkeypatch.setenv("ARIZE_SPACE_ID", "space-test")
     _provision_sandbox_impl(workflow_id="wf-a", host_workdir="/tmp/autofix-wf-a/repo")
 
     _, kwargs = fake_docker.containers.run_calls[0]
-    assert kwargs["environment"]["ANTHROPIC_API_KEY"] == "sk-ant-test"
+    assert "ANTHROPIC_API_KEY" not in kwargs["environment"]
+    assert "GITHUB_TOKEN" not in kwargs["environment"]
+    assert "ARIZE_API_KEY" not in kwargs["environment"]
+    assert "ARIZE_SPACE_ID" not in kwargs["environment"]
 
 
 def test_provision_sandbox_minimal_env_when_proxy_unset(
     fake_docker, monkeypatch: pytest.MonkeyPatch
 ):
-    """Without SANDBOX_EGRESS_PROXY_URL the container still gets
-    CREDENTIAL_PROXY_URL (default) but no HTTPS_PROXY routing —
-    useful for unit tests that don't bring up the proxy."""
+    """Without optional egress forwarding, broker routes are still present."""
     from src.activities.sandbox import _provision_sandbox_impl
 
     monkeypatch.delenv("SANDBOX_EGRESS_PROXY_URL", raising=False)
@@ -201,7 +194,7 @@ def test_provision_sandbox_minimal_env_when_proxy_unset(
     _, kwargs = fake_docker.containers.run_calls[0]
     env = kwargs["environment"]
     assert "HTTPS_PROXY" not in env  # routing skipped
-    assert env["CREDENTIAL_PROXY_URL"]  # default still set
+    assert env["CAPABILITY_MCP_URL"]
 
 
 def test_provision_sandbox_does_not_clone_or_fetch(fake_docker):
@@ -217,6 +210,42 @@ def test_provision_sandbox_does_not_clone_or_fetch(fake_docker):
     container = fake_docker.containers.created
     # No setup exec_run calls — sandbox is a passive runtime.
     assert container.exec_calls == []
+
+
+def test_provision_sandbox_registers_scoped_capability_for_pr(
+    fake_docker, monkeypatch: pytest.MonkeyPatch
+):
+    from src.activities.sandbox import _provision_sandbox_impl
+    from src.models import PRRef
+
+    posted = {}
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+    def fake_post(url, **kwargs):
+        posted.update({"url": url, **kwargs})
+        return Response()
+
+    monkeypatch.setenv("BROKER_REGISTRATION_SECRET", "trusted-register")
+    monkeypatch.setattr("src.activities.sandbox.httpx.post", fake_post)
+    _provision_sandbox_impl(
+        workflow_id="wf-bound",
+        host_workdir="/workspace/autofix-wf-bound/repo",
+        capability_token="opaque-capability-value",
+        pr=PRRef(owner="o", repo="r", number=9, head_sha="a", head_ref="feature"),
+    )
+    assert posted["url"].endswith("/bindings")
+    assert posted["headers"]["X-Broker-Registration-Secret"] == "trusted-register"
+    binding = posted["json"]["binding"]
+    assert binding["repository"] == "o/r"
+    assert binding["pr_number"] == 9
+    assert set(binding["capabilities"]) == {
+        "model.invoke",
+        "source.read",
+        "changes.publish",
+    }
 
 
 # ---------- exec_in_sandbox ----------

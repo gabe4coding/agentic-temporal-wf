@@ -42,25 +42,3 @@ def test_secret_scan_allows_normal_edit():
         },
     )
     assert rc == 0
-
-
-def test_signed_trailer_verify_passes_with_trailer():
-    rc, out = _run_hook(
-        "signed_trailer_verify.py",
-        {
-            "tool_name": "mcp__repo__git_commit_and_push",
-            "tool_input": {"message": "fix: lint\n\n[autofix-bot]"},
-        },
-    )
-    assert rc == 0
-
-
-def test_signed_trailer_verify_denies_without_trailer():
-    rc, out = _run_hook(
-        "signed_trailer_verify.py",
-        {
-            "tool_name": "mcp__repo__git_commit_and_push",
-            "tool_input": {"message": "fix: lint"},
-        },
-    )
-    assert json.loads(out)["hookSpecificOutput"]["permissionDecision"] == "deny"

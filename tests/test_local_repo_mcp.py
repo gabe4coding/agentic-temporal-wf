@@ -20,8 +20,8 @@ from src.tools.local_repo import (
     _run_ruff_impl,
     _run_pytest_impl,
     _git_status_impl,
-    _git_commit_and_push_impl,
     local_repo_mcp_server,
+    run_pytest_tool,
 )
 
 
@@ -52,6 +52,14 @@ async def test_run_ruff_tool_returns_json_text(tmp_repo: Path, monkeypatch):
     assert "exit_code" in parsed and "violations" in parsed
 
 
+async def test_run_pytest_target_is_optional(tmp_repo: Path, monkeypatch):
+    monkeypatch.setenv("AUTOFIX_WORKDIR_ID", "irrelevant")
+    monkeypatch.setattr("src.tools.local_repo.workdir_root_from_env", lambda: tmp_repo)
+    out = await _run_pytest_impl({})
+    assert "exit_code" in json.loads(out["content"][0]["text"])
+    assert run_pytest_tool.input_schema.__optional_keys__ == {"target"}
+
+
 def test_local_repo_mcp_server_is_an_mcp_server():
     # Smoke: the server object is constructed and exposes some 'name' or similar
     # attribute — exact attribute is documented by claude_agent_sdk; we just
@@ -69,7 +77,6 @@ def test_all_tool_symbols_exist():
         run_ruff_tool,
         run_pytest_tool,
         git_status_tool,
-        git_commit_and_push_tool,
     )
     # And the bare _impl coroutines we imported above are not None
     for sym in (
@@ -79,10 +86,8 @@ def test_all_tool_symbols_exist():
         run_ruff_tool,
         run_pytest_tool,
         git_status_tool,
-        git_commit_and_push_tool,
         _list_files_impl,
         _git_status_impl,
         _run_pytest_impl,
-        _git_commit_and_push_impl,
     ):
         assert sym is not None

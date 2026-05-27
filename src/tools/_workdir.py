@@ -27,7 +27,8 @@ _sandbox_handle_var: contextvars.ContextVar[SandboxHandle] = contextvars.Context
 
 def workdir_root(workdir_id: str) -> Path:
     """Resolve the per-workflow workdir root."""
-    return Path("/tmp") / f"autofix-{workdir_id}" / "repo"
+    root = Path(os.environ.get("WORKSPACE_ROOT", "/tmp"))
+    return root / f"autofix-{workdir_id}" / "repo"
 
 
 def safe_join(workdir: Path, relative: str) -> Path:
@@ -59,6 +60,9 @@ def workdir_root_from_env() -> Path:
     fallback exists so tests can monkeypatch.setenv("AUTOFIX_WORKDIR_ID",
     ...) and still resolve.
     """
+    sandbox_workdir = os.environ.get("AUTOFIX_WORKDIR")
+    if sandbox_workdir:
+        return Path(sandbox_workdir)
     try:
         wid = _workdir_id_var.get()
     except LookupError:

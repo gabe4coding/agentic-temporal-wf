@@ -1,10 +1,11 @@
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field
 
 
 class SandboxHandle(BaseModel):
-    """Identifies a per-workflow sandbox container. Lives in WorkflowState."""
+    """Non-secret identity and mount projection for an untrusted sandbox."""
 
     container_id: str
     workdir: str = "/work"
@@ -29,12 +30,40 @@ class ExecResult(BaseModel):
     stderr: str = ""
 
 
+class CommitResult(BaseModel):
+    pushed: bool
+    commit_sha: str | None = None
+    reason: str | None = None
+
+
 class PRRef(BaseModel):
     owner: str
     repo: str
     number: int
     head_sha: str
     head_ref: str
+
+
+class RunContext(BaseModel):
+    """Generic durable identity for one workload execution."""
+
+    workflow_id: str
+    run_id: str | None = None
+    workload_type: str
+    subject: dict = Field(default_factory=dict)
+    workspace_ref: str
+
+
+class CapabilityBinding(BaseModel):
+    """Broker-side authorization record. The opaque token is its lookup key."""
+
+    workflow_id: str
+    repository: str
+    pr_number: int
+    workspace_path: str
+    capabilities: set[str] = Field(default_factory=set)
+    expires_at: datetime
+    iteration: int = 0
 
 
 class GitHubEvent(BaseModel):
@@ -63,6 +92,20 @@ class FixPlan(BaseModel):
     blocking_reason: str | None = None
 
 
+class OperationRequest(BaseModel):
+    summary: str
+    commit_message: str
+
+
+class OperationResult(BaseModel):
+    operation_key: str
+    status: Literal["pending", "approved", "denied", "pushed", "failed"]
+    approval_id: str | None = None
+    approval_decision: bool | None = None
+    external_result_id: str | None = None
+    reason: str = ""
+
+
 class WorkflowState(BaseModel):
     pr: PRRef
     pending_events: list[GitHubEvent] = Field(default_factory=list)
@@ -73,6 +116,7 @@ class WorkflowState(BaseModel):
     last_check_run_id: int | None = None
     closed: bool = False
     sandbox: SandboxHandle | None = None
+    operations: dict[str, OperationResult] = Field(default_factory=dict)
 
 
 # ---------- HITL approval (Pattern-C rule 7) ----------

@@ -4,6 +4,9 @@ from src.models import (
     AgentDeps,
     FixPlan,
     WorkflowState,
+    OperationRequest,
+    OperationResult,
+    RunContext,
 )
 
 
@@ -48,3 +51,14 @@ def test_workflow_state_carries_sandbox_handle():
     s2 = WorkflowState.model_validate_json(s.model_dump_json())
     assert s2.sandbox is not None
     assert s2.sandbox.container_id == "cid"
+
+
+def test_generic_platform_contracts_serialize():
+    context = RunContext(
+        workflow_id="wf", workload_type="pr_autofix", workspace_ref="workspace/wf"
+    )
+    request = OperationRequest(summary="done", commit_message="fix")
+    result = OperationResult(operation_key="key", status="pending")
+    assert RunContext.model_validate_json(context.model_dump_json()) == context
+    assert request.commit_message == "fix"
+    assert result.status == "pending"

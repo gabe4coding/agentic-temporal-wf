@@ -13,15 +13,12 @@ from src.tools._workdir import safe_join
 # ---------- exec dispatch ----------
 #
 # The 4 command-execution functions below (run_ruff, run_pytest,
-# git_status, git_commit_and_push) accept either a `Path` (legacy host
+# git_status) accept either a `Path` (legacy host
 # filesystem path, kept for the existing unit tests) or a
 # `SandboxHandle` (per-workflow Docker sandbox). The dispatch is by
 # isinstance — explicit and easy to follow at the call site.
 #
-# File-based helpers (read_file, list_files, apply_edit) keep operating
-# on the host filesystem. The hybrid bind-mount design (volumes_from)
-# ensures the same path is visible inside the sandbox, so an edit done
-# on the host is picked up by the next exec_in_sandbox.
+# File-based helpers operate inside the agent runtime's `/work` mount.
 
 Target = Path | SandboxHandle
 
@@ -135,17 +132,6 @@ class GitStatus(BaseModel):
     behind: int = 0
 
 
-class CommitResult(BaseModel):
-    pushed: bool
-    commit_sha: str | None = None
-    reason: str | None = None  # "no_changes" | "remote_advanced" | other
-
-
-# Trailer appended to every autofix commit so the gateway can recognize
-# the push and skip the self-triggered pull_request.synchronize event.
-AUTOFIX_COMMIT_TRAILER = "[autofix-bot]"
-
-
 def _git(workdir: Target, *args: str) -> tuple[int, str, str]:
     """Run a git command against workdir; returns (rc, stdout, stderr)."""
     return _exec_at(workdir, ["git", *args])
@@ -157,56 +143,3 @@ def git_status(workdir: Target) -> GitStatus:
     _, porcelain, _ = _git(workdir, "status", "--porcelain")
     dirty = bool(porcelain.strip())
     return GitStatus(branch=branch, dirty=dirty)
-
-
-def git_commit_and_push(
-    workdir: Target,
-    message: str,
-    *,
-    idempotency_key: str | None = None,
-) -> CommitResult:
-    """Stage all, commit, push. If `idempotency_key` is given, it is
-    appended as an `Autofix-Idempotency:` trailer so retries are
-    detectable from git history (Pattern-C rule 6)."""
-    _, branch_out, _ = _git(workdir, "rev-parse", "--abbrev-ref", "HEAD")
-    branch = branch_out.strip()
-
-    add_rc, _, add_err = _git(workdir, "add", "-A")
-    if add_rc != 0:
-        return CommitResult(pushed=False, reason=add_err.strip())
-
-    diff_rc, _, _ = _git(workdir, "diff", "--cached", "--quiet")
-    if diff_rc == 0:
-        return CommitResult(pushed=False, reason="no_changes")
-
-    # Always tag autofix commits with a stable trailer so the gateway can
-    # recognize and drop the resulting pull_request.synchronize event.
-    full_message = (
-        message
-        if AUTOFIX_COMMIT_TRAILER in message
-        else f"{message}\n\n{AUTOFIX_COMMIT_TRAILER}"
-    )
-    if idempotency_key:
-        full_message += f"\nAutofix-Idempotency: {idempotency_key}"
-    commit_rc, _, commit_err = _git(workdir, "commit", "-m", full_message)
-    if commit_rc != 0:
-        return CommitResult(pushed=False, reason=commit_err.strip())
-    _, sha_out, _ = _git(workdir, "rev-parse", "HEAD")
-    sha = sha_out.strip()
-
-    fetch_rc, _, fetch_err = _git(workdir, "fetch", "origin", branch)
-    if fetch_rc != 0:
-        return CommitResult(pushed=False, commit_sha=sha, reason=fetch_err.strip())
-
-    _, behind_out, _ = _git(
-        workdir, "rev-list", "--count", f"HEAD..origin/{branch}"
-    )
-    behind = behind_out.strip()
-    if behind and int(behind) > 0:
-        return CommitResult(pushed=False, commit_sha=sha, reason="remote_advanced")
-
-    push_rc, _, push_err = _git(workdir, "push", "origin", branch)
-    if push_rc != 0:
-        return CommitResult(pushed=False, commit_sha=sha, reason=push_err.strip())
-
-    return CommitResult(pushed=True, commit_sha=sha)

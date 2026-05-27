@@ -4,7 +4,7 @@ against a live Docker daemon.
 NOT part of the default `pytest` run (the `integration` marker is
 deselected by addopts in pyproject.toml). Run them from INSIDE the
 worker container so that:
-  - HOSTNAME refers to a Docker container (needed for volumes_from)
+  - WORKSPACE_ROOT points at a host-visible bind-mounted directory
   - sandbox-net is reachable and the egress-proxy DNS alias resolves
   - the worker_tmp volume is the same filesystem the sandbox will see
 
@@ -85,11 +85,7 @@ def _skip_when_no_docker():
 
 @pytest.fixture
 def host_workdir(tmp_path: Path) -> Path:
-    """Prepare a clean workdir under /tmp/autofix-* that the sandbox
-    will inherit via volumes_from. We can't bind-mount tmp_path because
-    that path is on the host filesystem, not inside the worker_tmp
-    volume — so when running from the host (not inside the worker
-    container) we put the workdir straight in /tmp."""
+    """Prepare a clean run directory that is explicitly bound at `/work`."""
     base = Path(f"/tmp/autofix-integ-{os.getpid()}-{int(time.time())}")
     work = base / "repo"
     work.mkdir(parents=True)

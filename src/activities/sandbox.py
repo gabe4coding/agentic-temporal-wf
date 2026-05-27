@@ -14,11 +14,11 @@ Lifecycle:
 Determinism: container name is derived from workflow_id so retries land
 on the same container as long as it still exists.
 
-Security posture (v1):
+Security posture:
     - cap_drop ALL, no-new-privileges, pids/cpu/mem limits
-    - tmpfs /tmp inside the sandbox, no host bind-mounts
-    - egress allow-list is left to the docker network configuration —
-      see docker-compose.yml `sandbox-net` (TODO).
+    - exactly one writable bind mount: the individual run workspace at /work
+    - an opaque, run-scoped capability token; never upstream credentials
+    - egress limited to the internal broker/proxy network
 
 Out of scope for v1: auto-pause-on-idle wiring, snapshot/fork. The
 pause/resume activities are provided so the workflow can drive them;
@@ -26,13 +26,18 @@ the timer is the workflow's job.
 """
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+import os
+import secrets
 from typing import Any
 
 import docker
+import httpx
 from docker.errors import NotFound
 from temporalio import activity
 
-from src.models import PRRef, SandboxHandle, ExecResult
+from src.models import CapabilityBinding, PRRef, SandboxHandle, ExecResult
+from src.tools._workdir import workdir_root
 
 
 SANDBOX_IMAGE = "agent-sandbox:latest"
@@ -59,29 +64,46 @@ def _container_name(workflow_id: str) -> str:
 
 
 def _provision_sandbox_impl(
-    *, workflow_id: str, host_workdir: str
+    *,
+    workflow_id: str,
+    host_workdir: str,
+    pr: PRRef | None = None,
+    capability_token: str | None = None,
 ) -> SandboxHandle:
     """Start a per-workflow sandbox container.
 
-    The container inherits the worker's mounts (notably /tmp where
-    prepare_workdir cloned the repo) via Docker's `volumes_from`, so the
-    same host path resolves identically inside the sandbox. The
-    container itself is a passive runtime: it runs `sleep infinity` and
-    waits for `exec_in_sandbox` calls.
+    The container sees only this run's prepared repository as `/work`.
+    Broker registration is performed before start, so the container
+    receives only the opaque capability token required to use the model
+    relay and scoped MCP service.
 
     Args:
         workflow_id: used to derive the container name (stable across retries).
-        host_workdir: the path of the prepared workdir on the host, which
-            also becomes the SandboxHandle.workdir thanks to volumes_from.
+        host_workdir: trusted worker path of the prepared workdir.
     """
-    import os as _os
-
     client = docker.from_env()
-    # The worker container's hostname is the docker-internal name we
-    # pass to volumes_from. In docker-compose, $HOSTNAME == container id.
-    worker_hostname = _os.environ.get("HOSTNAME") or _os.environ.get(
-        "WORKER_CONTAINER_NAME"
-    )
+    token = capability_token or secrets.token_urlsafe(32)
+    broker_url = os.environ.get("CAPABILITY_BROKER_URL", "http://capability-broker:8443")
+    if pr is not None:
+        registration_secret = os.environ.get("BROKER_REGISTRATION_SECRET", "")
+        if not registration_secret:
+            raise RuntimeError("BROKER_REGISTRATION_SECRET must be configured")
+        binding = CapabilityBinding(
+            workflow_id=workflow_id,
+            repository=f"{pr.owner}/{pr.repo}",
+            pr_number=pr.number,
+            workspace_path=host_workdir,
+            capabilities={"model.invoke", "source.read", "changes.publish"},
+            expires_at=datetime.now(UTC) + timedelta(hours=24),
+        )
+        headers = {"X-Broker-Registration-Secret": registration_secret}
+        response = httpx.post(
+            f"{broker_url}/bindings",
+            headers=headers,
+            json={"token": token, "binding": binding.model_dump(mode="json")},
+            timeout=5.0,
+        )
+        response.raise_for_status()
     run_kwargs: dict[str, Any] = {
         "name": _container_name(workflow_id),
         "command": ["sleep", "infinity"],
@@ -92,52 +114,32 @@ def _provision_sandbox_impl(
         "pids_limit": 256,
         "cap_drop": ["ALL"],
         "security_opt": ["no-new-privileges:true"],
+        "volumes": {host_workdir: {"bind": SANDBOX_WORKDIR, "mode": "rw"}},
     }
     # Network name is project-prefixed by docker-compose
     # (e.g. agent-temporal_sandbox-net). Read it from env, fall back to
     # default daemon bridge if unset.
-    sandbox_network = _os.environ.get("SANDBOX_NETWORK_NAME")
+    sandbox_network = os.environ.get("SANDBOX_NETWORK_NAME")
     if sandbox_network:
         run_kwargs["network"] = sandbox_network
-    # Pattern-C: two separate proxies serve different concerns.
-    #
-    # - SANDBOX_EGRESS_PROXY_URL (tinyproxy) is the HTTPS CONNECT tunnel
-    #   with the FQDN allowlist. The claude CLI and any HTTPS client
-    #   uses it as HTTPS_PROXY.
-    # - CREDENTIAL_PROXY_URL is the REST endpoint (token fetch + HITL
-    #   gate). Sandbox-side code (github MCP, agent_runner) speaks HTTP
-    #   to it directly.
-    egress_proxy = _os.environ.get("SANDBOX_EGRESS_PROXY_URL")
-    credential_proxy = _os.environ.get(
-        "CREDENTIAL_PROXY_URL", "http://credential-proxy:8443"
-    )
+    egress_proxy = os.environ.get("SANDBOX_EGRESS_PROXY_URL")
+    mcp_url = os.environ.get("CAPABILITY_MCP_URL", f"{broker_url}/mcp")
+    relay_url = os.environ.get("ANTHROPIC_RELAY_URL", f"{broker_url}/anthropic")
     env_for_sandbox: dict[str, str] = {
-        "CREDENTIAL_PROXY_URL": credential_proxy,
-        # workdir_root_from_env() inside the sandbox uses this to resolve
-        # /tmp/autofix-{workflow_id}/repo. The path itself is visible
-        # via volumes_from, but the env var is how the SDK-MCP tools
-        # (mcp__repo__*) find it. Without it they fail at startup with
-        # 'AUTOFIX_WORKDIR_ID is not set'.
+        "RUN_CAPABILITY_TOKEN": token,
+        "ANTHROPIC_BASE_URL": relay_url,
+        "CAPABILITY_MCP_URL": mcp_url,
+        "AUTOFIX_WORKDIR": SANDBOX_WORKDIR,
         "AUTOFIX_WORKDIR_ID": workflow_id,
     }
-    # Anthropic API key: Open Question #1 — the proxy stack cannot MITM
-    # HTTPS to inject keys at the boundary today, so we ship
-    # ANTHROPIC_API_KEY into the sandbox env and let the claude CLI use
-    # it directly. The full Pattern-C target (mitmproxy + injected CA)
-    # is tracked as the follow-up.
-    anthropic_key = _os.environ.get("ANTHROPIC_API_KEY")
-    if anthropic_key:
-        env_for_sandbox["ANTHROPIC_API_KEY"] = anthropic_key
-    # OpenInference observability: forward whichever backend the worker
-    # operator has configured. Phoenix wins if both are set.
+    # Local telemetry routes may be forwarded; cloud observability
+    # credentials remain trusted-service-only.
     for var in (
         "PHOENIX_COLLECTOR_ENDPOINT",
         "OTEL_EXPORTER_OTLP_ENDPOINT",
-        "ARIZE_SPACE_ID",
-        "ARIZE_API_KEY",
         "ARIZE_PROJECT",
     ):
-        val = _os.environ.get(var)
+        val = os.environ.get(var)
         if val:
             env_for_sandbox[var] = val
     if egress_proxy:
@@ -147,19 +149,15 @@ def _provision_sandbox_impl(
                 "HTTPS_PROXY": egress_proxy,
                 "http_proxy": egress_proxy,
                 "https_proxy": egress_proxy,
-                # api.anthropic.com is reached via the tunnel as a normal
-                # CONNECT — listed in the egress-proxy filter file.
-                # phoenix is reached over plain HTTP for OTel — don't
-                # route it through the HTTPS tunnel.
-                "NO_PROXY": "localhost,127.0.0.1,egress-proxy,credential-proxy,phoenix,otel-collector",
-                "no_proxy": "localhost,127.0.0.1,egress-proxy,credential-proxy,phoenix,otel-collector",
+                # Broker calls and local telemetry routes stay inside the
+                # sandbox network rather than traversing the egress proxy.
+                "NO_PROXY": "localhost,127.0.0.1,egress-proxy,capability-broker,phoenix,otel-collector",
+                "no_proxy": "localhost,127.0.0.1,egress-proxy,capability-broker,phoenix,otel-collector",
             }
         )
     run_kwargs["environment"] = env_for_sandbox
-    if worker_hostname:
-        run_kwargs["volumes_from"] = [worker_hostname]
     container = client.containers.run(SANDBOX_IMAGE, **run_kwargs)
-    return SandboxHandle(container_id=container.id, workdir=host_workdir)
+    return SandboxHandle(container_id=container.id, workdir=SANDBOX_WORKDIR)
 
 
 def _exec_in_sandbox_impl(handle: SandboxHandle, cmd: list[str]) -> ExecResult:
@@ -206,18 +204,16 @@ def _teardown_sandbox_impl(handle: SandboxHandle) -> None:
 def provision_sandbox(pr: PRRef) -> SandboxHandle:
     """Start a per-workflow sandbox container.
 
-    Assumes prepare_workdir has already cloned the repo into
-    /tmp/autofix-{workflow_id}/repo on the worker. The sandbox inherits
-    that path via volumes_from.
-
-    `pr` is accepted for activity signature stability and future use
-    (e.g. tagging) but is not currently read inside the impl.
+    Assumes prepare_workdir has already cloned the repo into the worker's
+    dedicated workspace root. Registers the broker capability immediately
+    before mounting the individual repository into the sandbox.
     """
     workflow_id = activity.info().workflow_id
-    host_workdir = f"/tmp/autofix-{workflow_id}/repo"
+    host_workdir = str(workdir_root(workflow_id))
     return _provision_sandbox_impl(
         workflow_id=workflow_id,
         host_workdir=host_workdir,
+        pr=pr,
     )
 
 
