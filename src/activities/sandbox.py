@@ -151,8 +151,8 @@ def _provision_sandbox_impl(
                 # CONNECT — listed in the egress-proxy filter file.
                 # phoenix is reached over plain HTTP for OTel — don't
                 # route it through the HTTPS tunnel.
-                "NO_PROXY": "localhost,127.0.0.1,egress-proxy,credential-proxy,phoenix",
-                "no_proxy": "localhost,127.0.0.1,egress-proxy,credential-proxy,phoenix",
+                "NO_PROXY": "localhost,127.0.0.1,egress-proxy,credential-proxy,phoenix,otel-collector",
+                "no_proxy": "localhost,127.0.0.1,egress-proxy,credential-proxy,phoenix,otel-collector",
             }
         )
     run_kwargs["environment"] = env_for_sandbox

@@ -1,0 +1,71 @@
+# OpenTelemetry Collector configuration.
+#
+# Role: sit between the claude CLI subprocess (which emits its native
+# claude_code.* spans straight from Node) and Phoenix. The CLI's
+# attribute naming is its own ("input_tokens", "tool_name", ...); Phoenix
+# only renders cost/kind/tool-name correctly when it sees the
+# OpenInference semantic-convention attribute keys ("llm.token_count.prompt",
+# "openinference.span.kind", "tool.name", "input.value", "output.value").
+#
+# The `transform` processor below maps the CLI names onto OpenInference
+# names per span. Everything else passes through unchanged.
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+processors:
+  batch:
+    timeout: 1s
+    send_batch_size: 256
+
+  # OpenInference attribute mapping. Uses the contrib build's transform
+  # processor with OTTL (OpenTelemetry Transformation Language).
+  transform/openinference:
+    error_mode: ignore
+    trace_statements:
+      - context: span
+        statements:
+          # ---- openinference.span.kind ------------------------------
+          - set(attributes["openinference.span.kind"], "AGENT") where name == "claude_code.interaction"
+          - set(attributes["openinference.span.kind"], "LLM")   where name == "claude_code.llm_request"
+          - set(attributes["openinference.span.kind"], "TOOL")  where IsMatch(name, "^claude_code\\.tool")
+
+          # ---- llm.token_count.* (Phoenix cost calc) ----------------
+          - set(attributes["llm.token_count.prompt"], attributes["input_tokens"]) where attributes["input_tokens"] != nil
+          - set(attributes["llm.token_count.completion"], attributes["output_tokens"]) where attributes["output_tokens"] != nil
+          - set(attributes["llm.token_count.prompt.cache_read"], attributes["cache_read_tokens"]) where attributes["cache_read_tokens"] != nil
+          - set(attributes["llm.token_count.prompt.cache_write"], attributes["cache_creation_tokens"]) where attributes["cache_creation_tokens"] != nil
+
+          # ---- tool.name --------------------------------------------
+          - set(attributes["tool.name"], attributes["tool_name"]) where attributes["tool_name"] != nil
+
+          # ---- input.value / output.value ---------------------------
+          # The interaction span's user_prompt (gated by
+          # OTEL_LOG_USER_PROMPTS=1) is the natural input.value.
+          - set(attributes["input.value"], attributes["user_prompt"]) where name == "claude_code.interaction" and attributes["user_prompt"] != nil
+
+exporters:
+  otlphttp/phoenix:
+    endpoint: http://phoenix:6006
+    tls:
+      insecure: true
+
+  # Useful when debugging: pretty-print spans on the collector logs.
+  # Uncomment to enable.
+  # debug:
+  #   verbosity: detailed
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [transform/openinference, batch]
+      exporters: [otlphttp/phoenix]
+  telemetry:
+    logs:
+      level: info

@@ -56,6 +56,23 @@ services:
       - default
     restart: unless-stopped
 
+  otel-collector:
+    # OpenTelemetry Collector (contrib build). Sits between the claude
+    # CLI subprocess (inside the sandbox) and Phoenix, mapping CLI-native
+    # attribute names (input_tokens, tool_name, …) onto OpenInference
+    # semantic-convention names so Phoenix can render cost/kind/tool/etc.
+    # Config: observability/otel-collector.yaml.
+    image: otel/opentelemetry-collector-contrib:0.115.1
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./observability/otel-collector.yaml:/etc/otelcol/config.yaml:ro
+    networks:
+      - sandbox-net
+      - default
+    depends_on:
+      - phoenix
+    restart: unless-stopped
+
   phoenix:
     # Arize Phoenix — self-hosted OpenInference UI + OTLP collector.
     # Sandbox containers send spans to http://phoenix:6006/v1/traces;
@@ -108,8 +125,10 @@ services:
       # sandbox env so the agent_runner can initialize OTel inside.
       - PHOENIX_COLLECTOR_ENDPOINT=${PHOENIX_COLLECTOR_ENDPOINT:-http://phoenix:6006/v1/traces}
       # Native CLI OTel base endpoint (no /v1/traces suffix — the CLI
-      # appends it). Same Phoenix, different consumer.
-      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://phoenix:6006}
+      # appends it). Routed via otel-collector which maps CLI-native
+      # attribute names onto OpenInference convention before forwarding
+      # to Phoenix, so cost / span_kind / tool.name render correctly.
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
       - ARIZE_SPACE_ID=${ARIZE_SPACE_ID:-}
       - ARIZE_API_KEY=${ARIZE_API_KEY:-}
       - ARIZE_PROJECT=${ARIZE_PROJECT:-agent-temporal-dev}

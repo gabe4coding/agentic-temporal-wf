@@ -106,6 +106,17 @@ def build_options() -> ClaudeAgentOptions:
             "OTEL_TRACES_EXPORT_INTERVAL": "1000",
             "OTEL_METRIC_EXPORT_INTERVAL": "1000",
             "OTEL_LOGS_EXPORT_INTERVAL": "1000",
+            # Content opt-ins (off by default upstream for privacy).
+            # Per the Anthropic observability doc:
+            #   OTEL_LOG_USER_PROMPTS=1  → prompt text on user_prompt
+            #     events and on the claude_code.interaction span
+            #   OTEL_LOG_TOOL_DETAILS=1  → tool input arguments
+            #     (file paths, shell commands, search patterns)
+            #   OTEL_LOG_TOOL_CONTENT=1  → full tool input/output bodies
+            #     (truncated at 60 KB). Requires traces to be enabled.
+            "OTEL_LOG_USER_PROMPTS": "1",
+            "OTEL_LOG_TOOL_DETAILS": "1",
+            "OTEL_LOG_TOOL_CONTENT": "1",
         }
     return ClaudeAgentOptions(
         system_prompt=INSTRUCTIONS,
