@@ -112,6 +112,10 @@ async def dispatch_into_sandbox(
     try:
         # docker-py 7.x exposes the underlying socket as `_sock`. The
         # write side: send prompt, half-close so the subprocess sees EOF.
+        # Block indefinitely on reads — long LLM turns can go minutes
+        # without producing stdout. The Activity's start_to_close_timeout
+        # (10 min) and the heartbeat (every 30s) own the wall-clock cap.
+        sock._sock.settimeout(None)
         sock._sock.sendall(prompt.encode())
         sock._sock.shutdown(1)  # SHUT_WR
 
