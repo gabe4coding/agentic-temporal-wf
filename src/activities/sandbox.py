@@ -113,6 +113,12 @@ def _provision_sandbox_impl(
     )
     env_for_sandbox: dict[str, str] = {
         "CREDENTIAL_PROXY_URL": credential_proxy,
+        # workdir_root_from_env() inside the sandbox uses this to resolve
+        # /tmp/autofix-{workflow_id}/repo. The path itself is visible
+        # via volumes_from, but the env var is how the SDK-MCP tools
+        # (mcp__repo__*) find it. Without it they fail at startup with
+        # 'AUTOFIX_WORKDIR_ID is not set'.
+        "AUTOFIX_WORKDIR_ID": workflow_id,
     }
     # Anthropic API key: Open Question #1 — the proxy stack cannot MITM
     # HTTPS to inject keys at the boundary today, so we ship

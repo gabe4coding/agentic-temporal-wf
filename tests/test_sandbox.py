@@ -158,6 +158,8 @@ def test_provision_sandbox_injects_credential_proxy_env(
     assert env["https_proxy"] == "http://egress-proxy:8888"
     # CREDENTIAL_PROXY_URL is the token endpoint (separate service).
     assert env["CREDENTIAL_PROXY_URL"] == "http://credential-proxy:8443"
+    # AUTOFIX_WORKDIR_ID lets the SDK-MCP tools resolve /tmp/autofix-*/repo.
+    assert env["AUTOFIX_WORKDIR_ID"] == "wf-2"
     # NO_PROXY excludes the proxies themselves (avoid recursion) +
     # loopback. api.anthropic.com goes through the tunnel.
     assert "egress-proxy" in env["NO_PROXY"]
