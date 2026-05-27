@@ -85,8 +85,16 @@ async def dispatch_into_sandbox(
     handle: SandboxHandle, prompt: str
 ) -> AsyncIterator[str]:
     """Spawn `python -m src.agent_runner.main` inside the sandbox via the
-    Docker exec API and yield stdout lines."""
+    Docker exec API and yield stdout lines.
+
+    Docker stream demuxing: when `tty=False` the exec stream is framed
+    (8-byte header: stream_type [0=stdin, 1=stdout, 2=stderr], 3 padding,
+    uint32 BE payload size, then payload bytes). A raw `recv` mixes
+    headers into the data and corrupts JSON parsing — we demux here and
+    yield only the stdout frames as decoded lines. Stderr frames are
+    logged at WARNING for diagnostics."""
     import docker
+    import struct
 
     client = docker.from_env()
     container = client.containers.get(handle.container_id)
@@ -95,29 +103,63 @@ async def dispatch_into_sandbox(
         cmd=["python", "-m", "src.agent_runner.main"],
         stdin=True,
         stdout=True,
-        stderr=False,
+        stderr=True,
         workdir=handle.workdir,
     )["Id"]
     sock = client.api.exec_start(
         exec_id, detach=False, tty=False, stream=False, socket=True
     )
     try:
-        # docker-py 7.x: the socket attribute is `_sock`. If this breaks
-        # on a newer release, switch to aiohttp + /exec/{id}/start (see
-        # module docstring + plan Open Question #4).
+        # docker-py 7.x exposes the underlying socket as `_sock`. The
+        # write side: send prompt, half-close so the subprocess sees EOF.
         sock._sock.sendall(prompt.encode())
         sock._sock.shutdown(1)  # SHUT_WR
-        buffer = b""
+
+        raw = b""             # un-parsed bytes from the wire
+        stdout_buf = b""      # bytes belonging to stream 1 awaiting newline
+        stderr_buf = b""      # bytes belonging to stream 2 awaiting newline
+
+        def _split_lines(buf: bytes):
+            lines = []
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                lines.append(line)
+            return lines, buf
+
         while True:
             chunk = sock._sock.recv(65536)
             if not chunk:
-                if buffer:
-                    yield buffer.decode("utf-8", errors="replace")
-                return
-            buffer += chunk
-            while b"\n" in buffer:
-                line, buffer = buffer.split(b"\n", 1)
-                yield line.decode("utf-8", errors="replace")
+                break
+            raw += chunk
+            while len(raw) >= 8:
+                stream_type = raw[0]
+                payload_size = struct.unpack(">I", raw[4:8])[0]
+                if len(raw) < 8 + payload_size:
+                    break  # wait for more bytes
+                payload = raw[8:8 + payload_size]
+                raw = raw[8 + payload_size:]
+                if stream_type == 1:
+                    stdout_buf += payload
+                    lines, stdout_buf = _split_lines(stdout_buf)
+                    for line in lines:
+                        yield line.decode("utf-8", errors="replace")
+                elif stream_type == 2:
+                    stderr_buf += payload
+                    lines, stderr_buf = _split_lines(stderr_buf)
+                    for line in lines:
+                        logger.warning(
+                            "agent_runner stderr: %s",
+                            line.decode("utf-8", errors="replace"),
+                        )
+
+        # Drain any trailing partial line on either stream.
+        if stdout_buf:
+            yield stdout_buf.decode("utf-8", errors="replace")
+        if stderr_buf:
+            logger.warning(
+                "agent_runner stderr (trailing): %s",
+                stderr_buf.decode("utf-8", errors="replace"),
+            )
     finally:
         with contextlib.suppress(Exception):
             sock.close()
