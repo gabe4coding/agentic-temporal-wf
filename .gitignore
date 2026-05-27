@@ -27,3 +27,6 @@ Thumbs.db
 
 # Project
 /tmp/
+
+# Local MCP config (per-developer; not shared via git)
+.mcp.json
