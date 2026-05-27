@@ -1,6 +1,8 @@
 FROM python:3.12-slim
 
 ARG CLAUDE_CODE_VERSION=2.1.150
+ARG TARGETARCH
+ARG GITHUB_MCP_VERSION=v1.0.5
 
 # Pattern-C: the sandbox image carries the Claude Code CLI, the Python
 # Agent SDK, the agent_runner entrypoint and the org plugin bundle. It
@@ -22,6 +24,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Pin Claude Code CLI to a post-CVE-2025-66479 release.
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
+
+# github-mcp-server is needed INSIDE the sandbox because build_options()
+# configures mcp_servers["github"] with command="github-mcp-server" and
+# the claude CLI spawns it as a child of itself — which runs here, not
+# in the Worker process.
+RUN case "${TARGETARCH:-amd64}" in \
+        amd64) MCP_ARCH=x86_64 ;; \
+        arm64) MCP_ARCH=arm64 ;; \
+        *)     MCP_ARCH=x86_64 ;; \
+    esac \
+    && curl -fsSL -o /tmp/mcp.tar.gz \
+        "https://github.com/github/github-mcp-server/releases/download/${GITHUB_MCP_VERSION}/github-mcp-server_Linux_${MCP_ARCH}.tar.gz" \
+    && tar -xzf /tmp/mcp.tar.gz -C /usr/local/bin/ github-mcp-server \
+    && rm /tmp/mcp.tar.gz \
+    && chmod +x /usr/local/bin/github-mcp-server
 
 RUN pip install --no-cache-dir \
     ruff pytest claude-agent-sdk pydantic httpx \
