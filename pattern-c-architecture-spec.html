@@ -1,0 +1,493 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pattern-C Architecture — agent-temporal PoC</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+/*
+  TheFork "Tasty" design tokens + base styles + component classes
+  Source of truth: @lafourchette/design-tokens (Style-Dictionary / Supernova)
+*/
+:root {
+  --color-primary:#00665a; --color-secondary:#03a08e; --color-accent:#d6ffe9;
+  --color-on-primary:#eef6f6; --color-on-secondary:#ffffff; --color-on-accent:#00665a;
+  --color-page:#ffffff; --color-page-secondary:#fafafa; --color-section:#fafafa;
+  --color-modal:#ffffff; --color-modal-secondary:#fafafa;
+  --color-border:#e5e6e6; --color-border-strong:#7e8e9a; --color-border-subtle:#eff0f0;
+  --color-text:#020f19; --color-text-secondary:#495b69; --color-text-inverse:#fafafa;
+  --color-positive:#00665a; --color-positive-bg:#f0fff7; --color-positive-fg:#00665a;
+  --color-negative:#cb1030; --color-negative-bg:#fdf2f4; --color-negative-fg:#b4132e;
+  --color-warning:#e97101; --color-warning-bg:#ffefe0; --color-warning-fg:#da6a01;
+  --color-information:#086db5; --color-information-bg:#e1effa; --color-information-fg:#084f82;
+  --space-01:2px; --space-02:4px; --space-03:6px; --space-04:8px;
+  --space-05:12px; --space-06:16px; --space-07:20px; --space-08:24px;
+  --space-09:32px; --space-10:40px; --space-11:48px; --space-12:56px;
+  --radius-xs:4px; --radius-s:8px; --radius-m:12px; --radius-l:16px; --radius-xl:24px; --radius-pill:1000px;
+  --shadow-floating:0px 6px 24px 0px #020f1926,0px 4px 4px 0px #020f1905;
+  --shadow-highlight:0px 4px 8px 0px #020f1905,0px 8px 24px -4px #020f1914;
+  --shadow-modal:0px 12px 48px 0px #020f191a,0px 4px 16px 0px #020f1933;
+  --font-product:"Montserrat",system-ui,-apple-system,sans-serif;
+  --font-brand:"Valizas","Montserrat",serif;
+  --font-mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  --fs-t3:12px; --fs-t2:14px; --fs-t1:16px;
+  --fs-h3:18px; --fs-h2:24px; --fs-h1:32px;
+  --fs-fluid-sm:40px; --fs-fluid-md:48px;
+  --fw-default:500; --fw-medium:600; --fw-bold:700; --fw-heading:800;
+  --lh-heading:1.3; --lh-text:1.5;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-primary:#b4fed6; --color-secondary:#b4fed6; --color-accent:#004d44;
+    --color-on-primary:#00332d; --color-on-secondary:#00332d; --color-on-accent:#d6ffe9;
+    --color-page:#020f19; --color-page-secondary:#05131f; --color-section:#05131f;
+    --color-modal:#091b2a; --color-border:#212f3b; --color-border-strong:#7e8e9a;
+    --color-border-subtle:#091b2a; --color-text:#fafafa; --color-text-secondary:#a4afb6;
+    --color-text-inverse:#020f19; --color-positive:#03a08e; --color-positive-bg:#004d44;
+    --color-positive-fg:#d6ffe9; --color-negative:#e75a71; --color-negative-bg:#9a132a;
+    --color-negative-fg:#f8ced5; --color-warning:#f0a14a; --color-warning-bg:#7a3800;
+    --color-warning-fg:#fde4ce; --color-information:#0685e0; --color-information-bg:#09314e;
+    --color-information-fg:#e1effa;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--color-page); color: var(--color-text);
+  font-family: var(--font-product); font-size: var(--fs-t1);
+  font-weight: var(--fw-default); line-height: var(--lh-text);
+  -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
+}
+.wrap { max-width: 1000px; margin: 0 auto; padding: var(--space-12) var(--space-08); }
+a { color: var(--color-primary); font-weight: var(--fw-medium); }
+code { font-family: var(--font-mono); font-size: .9em; background: var(--color-page-secondary); color: var(--color-primary); padding: 2px 6px; border-radius: var(--radius-xs); }
+pre { font-family: var(--font-mono); font-size: 13px; line-height: 1.6; background: var(--color-page-secondary); border: 1px solid var(--color-border); border-radius: var(--radius-m); padding: var(--space-06) var(--space-07); overflow-x: auto; color: var(--color-text); }
+.brand-bar { background: var(--color-primary); color: var(--color-on-primary); padding: var(--space-05) var(--space-08); font-size: var(--fs-t3); font-weight: var(--fw-bold); letter-spacing: .14em; text-transform: uppercase; display: flex; align-items: center; gap: var(--space-04); }
+.brand-bar .dot { width: 8px; height: 8px; background: var(--color-secondary); border-radius: var(--radius-pill); }
+.brand-bar .spacer { flex: 1; }
+.status-badge { padding: 3px 10px; border-radius: var(--radius-pill); font-size: var(--fs-t3); font-weight: var(--fw-bold); letter-spacing: .1em; }
+.status-badge.draft    { background: rgba(255,255,255,.15); color: var(--color-on-primary); }
+.status-badge.review   { background: var(--color-warning);  color: #fff; }
+.status-badge.approved { background: var(--color-accent);   color: var(--color-on-accent); }
+.doc-head { margin-bottom: var(--space-11); }
+.eyebrow { text-transform: uppercase; letter-spacing: .14em; font-size: var(--fs-t3); font-weight: var(--fw-bold); color: var(--color-secondary); margin-bottom: var(--space-05); }
+h1 { font-family: var(--font-brand); font-size: var(--fs-fluid-md); font-weight: var(--fw-heading); line-height: 1.1; letter-spacing: -.02em; margin: 0 0 var(--space-05); color: var(--color-text); }
+.lede { font-size: 19px; color: var(--color-text-secondary); max-width: 64ch; margin: 0 0 var(--space-08); }
+.meta-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: var(--space-04) var(--space-08); margin: 0; padding: var(--space-07); background: var(--color-section); border: 1px solid var(--color-border); border-radius: var(--radius-m); }
+.meta-grid dt { font-size: var(--fs-t3); font-weight: var(--fw-bold); text-transform: uppercase; letter-spacing: .1em; color: var(--color-text-secondary); margin-bottom: 2px; }
+.meta-grid dd { margin: 0; font-size: var(--fs-t2); color: var(--color-text); font-weight: var(--fw-medium); }
+section { margin: var(--space-11) 0; }
+.section-eyebrow { font-size: var(--fs-t3); text-transform: uppercase; letter-spacing: .14em; font-weight: var(--fw-bold); color: var(--color-secondary); margin: 0 0 var(--space-06); }
+h2 { font-family: var(--font-brand); font-size: var(--fs-h1); font-weight: var(--fw-heading); line-height: var(--lh-heading); margin: 0 0 var(--space-05); color: var(--color-text); }
+h3 { font-size: var(--fs-h2); font-weight: var(--fw-bold); line-height: var(--lh-heading); margin: 0 0 var(--space-04); color: var(--color-text); }
+p { margin: 0 0 var(--space-05); color: var(--color-text-secondary); }
+p strong, li strong { color: var(--color-text); font-weight: var(--fw-bold); }
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: var(--space-05); }
+.stat-card { background: var(--color-modal); border: 1px solid var(--color-border); border-radius: var(--radius-l); padding: var(--space-07); box-shadow: var(--shadow-highlight); text-align: center; }
+.stat-value { font-family: var(--font-brand); font-size: var(--fs-fluid-sm); font-weight: var(--fw-heading); color: var(--color-primary); line-height: 1; }
+.stat-label { font-size: var(--fs-t3); font-weight: var(--fw-bold); text-transform: uppercase; letter-spacing: .1em; color: var(--color-text-secondary); margin-top: var(--space-03); }
+.callout { border-left: 4px solid; padding: var(--space-06) var(--space-07); border-radius: var(--radius-s); font-size: var(--fs-t2); margin: var(--space-07) 0; }
+.callout-info     { background: var(--color-information-bg); border-color: var(--color-information); color: var(--color-information-fg); }
+.callout-warning  { background: var(--color-warning-bg);     border-color: var(--color-warning);     color: var(--color-warning-fg); }
+.callout-positive { background: var(--color-positive-bg);    border-color: var(--color-positive);    color: var(--color-positive-fg); }
+.callout-negative { background: var(--color-negative-bg);    border-color: var(--color-negative);    color: var(--color-negative-fg); }
+.table-wrap { overflow-x: auto; border: 1px solid var(--color-border); border-radius: var(--radius-m); }
+table { width: 100%; border-collapse: collapse; font-size: var(--fs-t2); }
+thead { background: var(--color-section); }
+th { padding: var(--space-05) var(--space-06); text-align: left; font-weight: var(--fw-bold); font-size: var(--fs-t3); text-transform: uppercase; letter-spacing: .1em; color: var(--color-text-secondary); border-bottom: 1px solid var(--color-border); }
+td { padding: var(--space-05) var(--space-06); border-bottom: 1px solid var(--color-border-subtle); color: var(--color-text-secondary); vertical-align: top; }
+tbody tr:last-child td { border-bottom: 0; }
+tbody tr:hover td { background: var(--color-section); }
+.pill { display: inline-flex; padding: 2px 10px; border-radius: var(--radius-pill); font-size: var(--fs-t3); font-weight: var(--fw-bold); letter-spacing: .06em; white-space: nowrap; }
+.pill-positive { background: var(--color-positive-bg); color: var(--color-positive-fg); }
+.pill-warning  { background: var(--color-warning-bg);  color: var(--color-warning-fg); }
+.pill-negative { background: var(--color-negative-bg); color: var(--color-negative-fg); }
+.pill-info     { background: var(--color-information-bg); color: var(--color-information-fg); }
+.pill-neutral  { background: var(--color-section); color: var(--color-text-secondary); border: 1px solid var(--color-border); }
+.card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: var(--space-06); }
+.card { background: var(--color-modal); border: 1px solid var(--color-border); border-radius: var(--radius-l); padding: var(--space-07); box-shadow: var(--shadow-highlight); }
+.card-title { font-size: var(--fs-h3); font-weight: var(--fw-bold); color: var(--color-text); margin-bottom: var(--space-04); }
+.card-body  { margin: 0; font-size: var(--fs-t2); color: var(--color-text-secondary); }
+figure.diagram { margin: var(--space-08) 0; background: var(--color-section); border: 1px solid var(--color-border); border-radius: var(--radius-l); padding: var(--space-08); box-shadow: var(--shadow-highlight); }
+figure.diagram figcaption { text-align: center; font-size: var(--fs-t3); color: var(--color-text-secondary); margin-top: var(--space-05); }
+  </style>
+</head>
+<body>
+  <div class="brand-bar">
+    <span class="dot"></span><span>TheFork · Engineering</span>
+    <span class="spacer"></span>
+    <span class="status-badge approved">Approved</span>
+  </div>
+  <main class="wrap">
+    <header class="doc-head">
+      <div class="eyebrow">Spec · 2026-05-27</div>
+      <h1>Pattern-C Architecture — agent-temporal PoC</h1>
+      <p class="lede">A Temporal-hosted autofix agent that runs the Claude Agent SDK inside a per-workflow sandbox container, with credentials, observability, and HITL approval mediated by Worker-side proxies.</p>
+      <dl class="meta-grid">
+        <div><dt>Author</dt><dd>Gabriele Pavanello</dd></div>
+        <div><dt>Repo</dt><dd>gabe4coding/agentic-temporal-wf</dd></div>
+        <div><dt>Pattern</dt><dd>C (sandboxed agent loop)</dd></div>
+        <div><dt>SDKs</dt><dd>temporalio · claude-agent-sdk 0.2.87 · claude CLI 2.1.150</dd></div>
+        <div><dt>Backends</dt><dd>Temporal Cloud · Phoenix (local)</dd></div>
+        <div><dt>Status</dt><dd>Live-verified end-to-end</dd></div>
+      </dl>
+    </header>
+
+    <section>
+      <div class="section-eyebrow">Overview</div>
+      <h2>What this PoC actually does</h2>
+      <p>The PoC ingests a GitHub Pull Request webhook, opens a durable Temporal workflow per PR, spawns a per-workflow Docker sandbox container, and runs the Claude Agent SDK <em>inside</em> that sandbox. The agent reads the PR, edits files, runs <code>ruff</code> + <code>pytest</code>, commits and pushes the fix back to the branch, and posts a rolling status comment — all under hard isolation from the Worker host's credentials.</p>
+      <p>The architecture follows the <strong>Pattern-C "Temporal × Sandbox" reference architecture</strong> from the <em>Agents Deployment at TheFork</em> ADR. The defining rule: <strong>the Worker is a control plane, not the agent host</strong>. LLM-generated code never executes in the Worker process. Credentials never enter the sandbox env (one documented concession aside).</p>
+
+      <div class="stat-grid">
+        <div class="stat-card"><div class="stat-value">2</div><div class="stat-label">Trust zones</div></div>
+        <div class="stat-card"><div class="stat-value">14</div><div class="stat-label">Components</div></div>
+        <div class="stat-card"><div class="stat-value">7/7</div><div class="stat-label">Pattern-C rules</div></div>
+        <div class="stat-card"><div class="stat-value">135</div><div class="stat-label">Tests green</div></div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-eyebrow">Diagram</div>
+      <h2>System schema</h2>
+
+      <figure class="diagram">
+        <svg viewBox="0 0 880 620" width="100%" role="img" aria-label="Pattern-C architecture diagram" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="arr-grey" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="#7e8e9a"/>
+            </marker>
+            <marker id="arr-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="#086db5"/>
+            </marker>
+            <marker id="arr-cyan" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="#03a08e"/>
+            </marker>
+            <marker id="arr-orange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="#e97101"/>
+            </marker>
+            <marker id="arr-pink" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="#cb1030"/>
+            </marker>
+          </defs>
+
+          <!-- Trusted zone background -->
+          <rect x="20" y="30" width="840" height="280" rx="12" fill="#e1effa" opacity="0.4" stroke="#086db5" stroke-width="1"/>
+          <text x="36" y="50" font-family="Montserrat,sans-serif" font-size="11" font-weight="700" fill="#084f82" letter-spacing="1">TRUSTED ZONE — WORKER HOST (VAULT-LOADED CREDENTIALS)</text>
+
+          <!-- Untrusted zone background -->
+          <rect x="20" y="340" width="840" height="260" rx="12" fill="#fdf2f4" opacity="0.6" stroke="#cb1030" stroke-width="1"/>
+          <text x="36" y="360" font-family="Montserrat,sans-serif" font-size="11" font-weight="700" fill="#b4132e" letter-spacing="1">UNTRUSTED ZONE — PER-WORKFLOW SANDBOX (cap_drop=ALL, no-new-privileges)</text>
+
+          <!-- Top row (Trusted) -->
+          <!-- GitHub -->
+          <rect x="40" y="70" width="110" height="46" rx="8" fill="#ffefe0" stroke="#e97101" stroke-width="1.2"/>
+          <text x="95" y="89" font-family="Montserrat,sans-serif" font-size="12" font-weight="700" text-anchor="middle" fill="#020f19">GitHub</text>
+          <text x="95" y="104" font-family="Montserrat,sans-serif" font-size="10" text-anchor="middle" fill="#495b69">webhook</text>
+
+          <!-- Gateway -->
+          <rect x="170" y="70" width="110" height="46" rx="8" fill="#fafafa" stroke="#7e8e9a" stroke-width="1"/>
+          <text x="225" y="89" font-family="Montserrat,sans-serif" font-size="12" font-weight="700" text-anchor="middle" fill="#020f19">Gateway</text>
+          <text x="225" y="104" font-family="Montserrat,sans-serif" font-size="10" text-anchor="middle" fill="#495b69">FastAPI · HMAC</text>
+
+          <!-- Temporal Cloud -->
+          <rect x="300" y="70" width="120" height="46" rx="8" fill="#e1effa" stroke="#086db5" stroke-width="1.2"/>
+          <text x="360" y="89" font-family="Montserrat,sans-serif" font-size="12" font-weight="700" text-anchor="middle" fill="#020f19">Temporal Cloud</text>
+          <text x="360" y="104" font-family="Montserrat,sans-serif" font-size="10" text-anchor="middle" fill="#495b69">durable execution</text>
+
+          <!-- Worker -->
+          <rect x="440" y="60" width="170" height="66" rx="8" fill="#d6ffe9" stroke="#00665a" stroke-width="1.5"/>
+          <text x="525" y="79" font-family="Montserrat,sans-serif" font-size="13" font-weight="700" text-anchor="middle" fill="#020f19">Worker (control plane)</text>
+          <text x="525" y="95" font-family="Montserrat,sans-serif" font-size="10" text-anchor="middle" fill="#495b69">PRAutofixWorkflow</text>
+          <text x="525" y="110" font-family="Montserrat,sans-serif" font-size="10" text-anchor="middle" fill="#495b69">+ docker.sock spawner</text>
+
+          <!-- API external -->
+          <rect x="640" y="60" width="200" height="32" rx="8" fill="#ffefe0" stroke="#e97101" stroke-width="1"/>
+          <text x="740" y="80" font-family="Montserrat,sans-serif" font-size="11" font-weight="700" text-anchor="middle" fill="#020f19">api.anthropic.com</text>
+
+          <rect x="640" y="100" width="200" height="32" rx="8" fill="#ffefe0" stroke="#e97101" stroke-width="1"/>
+          <text x="740" y="120" font-family="Montserrat,sans-serif" font-size="11" font-weight="700" text-anchor="middle" fill="#020f19">api.github.com</text>
+
+          <!-- Middle row (Trusted) -->
+          <!-- credential-proxy -->
+          <rect x="40" y="170" width="170" height="60" rx="8" fill="#fafafa" stroke="#03a08e" stroke-width="1.5"/>
+          <text x="125" y="190" font-family="Montserrat,sans-serif" font-size="12" font-weight="700" text-anchor="middle" fill="#020f19">credential-proxy</text>
+          <text x="125" y="206" font-family="Montserrat,sans-serif" font-size="10" text-anchor="middle" fill="#495b69">FastAPI · /__token</text>
+          <text x="125" y="220" font-family="Montserrat,sans-serif" font-size="10" text-anchor="middle" fill="#495b69">/__forward (HITL gate)</text>
+
+          <!-- egress-proxy -->
+          <rect x="230" y="170" width="170" height="60" rx="8" fill="#fafafa" stroke="#03a08e" stroke-width="1.5"/>
+          <text x="315" y="190" font-family="Montserrat,sans-serif" font-size="12" font-weight="700" text-anchor="middle" fill="#020f19">egress-proxy</text>
+          <text x="315" y="206" font-family="Montserrat,sans-serif" font-size="10" text-anchor="middle" fill="#495b69">tinyproxy · HTTPS CONNECT</text>
+          <text x="315" y="220" font-family="Montserrat,sans-serif" font-size="10" text-anchor="middle" fill="#495b69">FQDN allowlist</text>
+
+          <!-- Phoenix -->
+          <rect x="420" y="170" width="170" height="60" rx="8" fill="#fafafa" stroke="#cb1030" stroke-width="1.5"/>
+          <text x="505" y="190" font-family="Montserrat,sans-serif" font-size="12" font-weight="700" text-anchor="middle" fill="#020f19">Phoenix</text>
+          <text x="505" y="206" font-family="Montserrat,sans-serif" font-size="10" text-anchor="middle" fill="#495b69">OpenInference UI</text>
+          <text x="505" y="220" font-family="Montserrat,sans-serif" font-size="10" text-anchor="middle" fill="#495b69">localhost:6006</text>
+
+          <text x="36" y="265" font-family="Montserrat,sans-serif" font-size="10" fill="#495b69" font-style="italic">docker network sandbox-net (internal: true — no NAT outside egress-proxy)</text>
+
+          <!-- Top row arrows -->
+          <line x1="150" y1="93" x2="170" y2="93" stroke="#7e8e9a" stroke-width="1.5" marker-end="url(#arr-grey)"/>
+          <text x="160" y="86" font-family="Montserrat,sans-serif" font-size="9" text-anchor="middle" fill="#495b69">webhook</text>
+          <line x1="280" y1="93" x2="300" y2="93" stroke="#7e8e9a" stroke-width="1.5" marker-end="url(#arr-grey)"/>
+          <text x="290" y="86" font-family="Montserrat,sans-serif" font-size="9" text-anchor="middle" fill="#495b69">signal</text>
+          <line x1="420" y1="93" x2="440" y2="93" stroke="#7e8e9a" stroke-width="1.5" marker-end="url(#arr-grey)"/>
+          <line x1="440" y1="93" x2="420" y2="93" stroke="#7e8e9a" stroke-width="1.5" marker-end="url(#arr-grey)"/>
+
+          <!-- Sandbox row -->
+          <rect x="40" y="380" width="170" height="60" rx="8" fill="#fdf2f4" stroke="#cb1030" stroke-width="1.2"/>
+          <text x="125" y="400" font-family="Montserrat,sans-serif" font-size="12" font-weight="700" text-anchor="middle" fill="#020f19">agent_runner.main</text>
+          <text x="125" y="416" font-family="Montserrat,sans-serif" font-size="10" text-anchor="middle" fill="#495b69">JSON-lines stdout</text>
+          <text x="125" y="430" font-family="Montserrat,sans-serif" font-size="10" text-anchor="middle" fill="#495b69">setup_otel + dispatch</text>
+
+          <rect x="230" y="380" width="170" height="60" rx="8" fill="#fdf2f4" stroke="#cb1030" stroke-width="1.2"/>
+          <text x="315" y="400" font-family="Montserrat,sans-serif" font-size="12" font-weight="700" text-anchor="middle" fill="#020f19">claude_agent_sdk</text>
+          <text x="315" y="416" font-family="Montserrat,sans-serif" font-size="10" text-anchor="middle" fill="#495b69">.query() Python</text>
+
+          <rect x="420" y="380" width="170" height="60" rx="8" fill="#fdf2f4" stroke="#cb1030" stroke-width="1.2"/>
+          <text x="505" y="400" font-family="Montserrat,sans-serif" font-size="12" font-weight="700" text-anchor="middle" fill="#020f19">claude CLI (Node)</text>
+          <text x="505" y="416" font-family="Montserrat,sans-serif" font-size="10" text-anchor="middle" fill="#495b69">v2.1.150</text>
+
+          <rect x="610" y="380" width="220" height="60" rx="8" fill="#ffefe0" stroke="#e97101" stroke-width="1.2"/>
+          <text x="720" y="400" font-family="Montserrat,sans-serif" font-size="12" font-weight="700" text-anchor="middle" fill="#020f19">/plugins (RO mount)</text>
+          <text x="720" y="416" font-family="Montserrat,sans-serif" font-size="10" text-anchor="middle" fill="#495b69">tf-guardrails</text>
+          <text x="720" y="430" font-family="Montserrat,sans-serif" font-size="10" text-anchor="middle" fill="#495b69">tf-mitigations</text>
+
+          <!-- /work -->
+          <rect x="40" y="480" width="200" height="50" rx="8" fill="#fafafa" stroke="#7e8e9a" stroke-width="1"/>
+          <text x="140" y="500" font-family="Montserrat,sans-serif" font-size="11" font-weight="700" text-anchor="middle" fill="#020f19">/work (volumes_from)</text>
+          <text x="140" y="516" font-family="Montserrat,sans-serif" font-size="9" text-anchor="middle" fill="#495b69">/tmp/autofix-{wf-id}/repo</text>
+
+          <text x="300" y="500" font-family="Montserrat,sans-serif" font-size="10" font-weight="600" fill="#b4132e">Env in sandbox: ANTHROPIC_API_KEY only (Open Q#1).</text>
+          <text x="300" y="515" font-family="Montserrat,sans-serif" font-size="10" font-weight="600" fill="#b4132e">GITHUB_TOKEN never enters — fetched at runtime.</text>
+
+          <!-- Sandbox internal arrows -->
+          <line x1="210" y1="410" x2="230" y2="410" stroke="#7e8e9a" stroke-width="1.5" marker-end="url(#arr-grey)"/>
+          <line x1="400" y1="410" x2="420" y2="410" stroke="#7e8e9a" stroke-width="1.5" marker-end="url(#arr-grey)"/>
+          <text x="410" y="403" font-family="Montserrat,sans-serif" font-size="9" text-anchor="middle" fill="#495b69">spawn</text>
+          <line x1="590" y1="410" x2="610" y2="410" stroke="#7e8e9a" stroke-width="1.5" marker-end="url(#arr-grey)"/>
+          <text x="600" y="403" font-family="Montserrat,sans-serif" font-size="9" text-anchor="middle" fill="#495b69">load</text>
+
+          <!-- Worker → agent_runner (L-shape blue) -->
+          <path d="M 460 126 L 460 260 L 125 260 L 125 380" fill="none" stroke="#086db5" stroke-width="2" marker-end="url(#arr-blue)"/>
+          <text x="470" y="200" font-family="Montserrat,sans-serif" font-size="10" font-weight="700" fill="#086db5">docker exec (dispatch)</text>
+
+          <!-- agent_runner → credential-proxy (cyan vertical) -->
+          <line x1="125" y1="380" x2="125" y2="230" stroke="#03a08e" stroke-width="2" marker-end="url(#arr-cyan)"/>
+          <text x="135" y="320" font-family="Montserrat,sans-serif" font-size="10" font-weight="700" fill="#03a08e">GET /__token</text>
+
+          <!-- claude CLI → egress-proxy (cyan vertical) -->
+          <line x1="455" y1="380" x2="345" y2="230" stroke="#03a08e" stroke-width="2" marker-end="url(#arr-cyan)"/>
+          <text x="350" y="320" font-family="Montserrat,sans-serif" font-size="10" font-weight="700" fill="#03a08e">HTTPS_PROXY</text>
+
+          <!-- egress-proxy → api.anthropic (orange L) -->
+          <path d="M 350 170 L 350 140 L 640 140 L 640 76" fill="none" stroke="#e97101" stroke-width="2" stroke-dasharray="5,3" marker-end="url(#arr-orange)"/>
+          <text x="500" y="135" font-family="Montserrat,sans-serif" font-size="9" font-weight="700" fill="#da6a01">CONNECT 443</text>
+
+          <!-- egress-proxy → api.github (orange L) -->
+          <path d="M 380 170 L 380 150 L 640 150 L 640 116" fill="none" stroke="#e97101" stroke-width="2" stroke-dasharray="5,3" marker-end="url(#arr-orange)"/>
+
+          <!-- agent_runner → Phoenix (pink L, over the top) -->
+          <path d="M 210 380 L 210 290 L 505 290 L 505 230" fill="none" stroke="#cb1030" stroke-width="2" stroke-dasharray="5,3" marker-end="url(#arr-pink)"/>
+          <text x="370" y="284" font-family="Montserrat,sans-serif" font-size="10" font-weight="700" fill="#cb1030">OTLP /v1/traces</text>
+
+          <!-- agent_runner → /work (green) -->
+          <line x1="125" y1="440" x2="125" y2="480" stroke="#00665a" stroke-width="2" marker-end="url(#arr-cyan)"/>
+          <text x="140" y="466" font-family="Montserrat,sans-serif" font-size="9" font-weight="700" fill="#00665a">cwd</text>
+        </svg>
+        <figcaption>Pattern-C: control plane (Worker) dispatches the agent into a per-workflow sandbox container; credentials and observability flow through Worker-side proxies, never enter the sandbox env.</figcaption>
+      </figure>
+    </section>
+
+    <section>
+      <div class="section-eyebrow">Components · Trusted zone</div>
+      <h2>What lives on the Worker host</h2>
+      <p>The trusted zone hosts every component that holds a Vault-loaded credential or sits on the durable control plane. Everything here is operated under the standard mTLS + Datadog + runbook regime.</p>
+
+      <div class="card-grid">
+        <div class="card">
+          <div class="card-title">GitHub (webhook)</div>
+          <p class="card-body">External event source. Posts to <code>POST /webhook</code> on every PR open/synchronize. Includes <code>X-Hub-Signature-256</code> and <code>X-GitHub-Delivery</code> headers.</p>
+        </div>
+        <div class="card">
+          <div class="card-title">Gateway (FastAPI · HMAC)</div>
+          <p class="card-body">Three jobs: verifies HMAC against <code>GITHUB_WEBHOOK_SECRET</code>; checks <code>RepoAllowlist.from_env()</code> (fail-closed); projects the payload into a <code>GitHubEvent</code> and calls <code>signal_with_start</code> on Temporal.</p>
+        </div>
+        <div class="card">
+          <div class="card-title">Temporal Cloud</div>
+          <p class="card-body">Managed durable-execution engine. Owns workflow state, event history, retry policy, Signals, Updates, deterministic replay. Worker Versioning pins each in-flight workflow to its start-time <code>build_id</code>.</p>
+        </div>
+        <div class="card">
+          <div class="card-title">Worker (control plane)</div>
+          <p class="card-body">Python process running <code>PRAutofixWorkflow</code> + activities (<code>provision_sandbox</code>, <code>run_agent_iteration</code>, <code>teardown_sandbox</code>, <code>post_status</code>…). <strong>Never runs <code>claude_agent_sdk.query()</code> in-process.</strong> Dispatches into the sandbox via <code>docker exec</code>, observes the JSON-lines stream, heartbeats every 30 s.</p>
+        </div>
+        <div class="card">
+          <div class="card-title">credential-proxy (FastAPI)</div>
+          <p class="card-body">Custodian of Vault credentials. Exposes <code>/__token/{github|anthropic}</code> (short-lived token fetch), <code>/__forward</code> (HITL gate that issues Workflow Updates), <code>/__inject_test</code> (unit-test surface), <code>/healthz</code>. Sits on both <code>sandbox-net</code> (internal) and <code>default</code> (outbound).</p>
+        </div>
+        <div class="card">
+          <div class="card-title">egress-proxy (tinyproxy)</div>
+          <p class="card-body">HTTPS forward-proxy. The CLI claude reaches it via <code>HTTPS_PROXY=http://egress-proxy:8888</code>. Tinyproxy 1.11+ with <code>FilterDefaultDeny Yes</code> + <code>FilterExtended Yes</code> enforces an FQDN allowlist (<code>api.anthropic.com</code>, <code>*.github.com</code>, <code>pypi.org</code>, …).</p>
+        </div>
+        <div class="card">
+          <div class="card-title">Phoenix (OpenInference UI)</div>
+          <p class="card-body">Self-hosted Arize Phoenix container. Accepts OTLP HTTP on <code>:6006/v1/traces</code> and renders agent traces (<code>claude_code.interaction</code> → <code>claude_code.llm_request</code> / <code>claude_code.tool</code>). UI at <code>http://localhost:6006</code>, zero credentials.</p>
+        </div>
+        <div class="card">
+          <div class="card-title">api.anthropic.com</div>
+          <p class="card-body">Anthropic Messages API. Reachable only via the <code>egress-proxy</code> CONNECT tunnel — <code>sandbox-net</code> has <code>internal: true</code> (no NAT).</p>
+        </div>
+        <div class="card">
+          <div class="card-title">api.github.com</div>
+          <p class="card-body">GitHub REST API. Used by <code>github-mcp-server</code> (subprocess of the CLI claude) for PR diff, comment fetch, check runs. Same tunnel as Anthropic.</p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-eyebrow">Components · Untrusted zone</div>
+      <h2>What lives inside the sandbox container</h2>
+      <p>The untrusted zone is a per-workflow Docker sibling container spawned by the Worker via the host <code>docker.sock</code>. Hardening at container creation: <code>cap_drop=ALL</code>, <code>no-new-privileges:true</code>, pids/cpu/mem limits, <code>NetworkPolicy</code> via <code>sandbox-net</code>.</p>
+
+      <div class="card-grid">
+        <div class="card">
+          <div class="card-title">agent_runner.main</div>
+          <p class="card-body">In-sandbox Python entrypoint. Three steps per iteration: <code>setup_otel()</code> to wire Phoenix; <code>build_options()</code> which calls <code>httpx.get(/__token/github)</code> to fetch the PAT; <code>async for msg in query(...)</code> serializing each <code>AssistantMessage</code>/<code>ResultMessage</code> as one JSON line on stdout.</p>
+        </div>
+        <div class="card">
+          <div class="card-title">claude_agent_sdk.query()</div>
+          <p class="card-body">Python SDK that wraps the CLI subprocess and exposes an async iterator. Forwards <code>ClaudeAgentOptions.env</code> (including the OTel beta flags) to the child process.</p>
+        </div>
+        <div class="card">
+          <div class="card-title">claude CLI (Node) v2.1.150</div>
+          <p class="card-body">The actual engine. Subprocess Node.js spawned by <code>query()</code>. Runs the plan→act→observe loop, calls <code>api.anthropic.com</code>, executes tools, applies permissions, loads plugins. <strong>2.1.x ships the OTel traces beta</strong> — 2.0.65 did not.</p>
+        </div>
+        <div class="card">
+          <div class="card-title">/plugins (RO mount)</div>
+          <p class="card-body">Read-only Claude Code plugin bundles. <code>tf-guardrails</code> = path scoping + categorical deny of <code>Bash</code>/<code>WebFetch</code>. <code>tf-mitigations</code> = secret-scan PreToolUse hook + signed-commit-trailer verifier.</p>
+        </div>
+        <div class="card">
+          <div class="card-title">/work (volumes_from)</div>
+          <p class="card-body">Per-workflow working directory. Worker's <code>prepare_workdir</code> clones the repo into <code>/tmp/autofix-{wf-id}/repo</code> on the host; sandbox inherits the path via Docker's <code>volumes_from</code>. The same on-disk tree is visible both to the CLI <code>Read</code>/<code>Edit</code> and to Worker-side <code>git push</code>.</p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-eyebrow">Relationships</div>
+      <h2>How the pieces talk to each other</h2>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>#</th><th>Edge</th><th>Wire</th><th>Purpose</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>1</td><td>GitHub → Gateway</td><td>HTTPS · HMAC-signed POST</td><td>Webhook trigger (<code>pull_request.opened</code>, <code>synchronize</code>, …).</td></tr>
+            <tr><td>2</td><td>Gateway → Temporal Cloud</td><td>gRPC · <code>signal_with_start</code></td><td>Idempotent open-or-resume of the workflow keyed by <code>pr-autofix-{owner}-{repo}-{number}</code>.</td></tr>
+            <tr><td>3</td><td>Temporal ↔ Worker</td><td>gRPC mTLS · long-poll</td><td>Workflow tasks dispatched to the Worker; state checkpoints back to Temporal.</td></tr>
+            <tr><td>4</td><td>Worker → agent_runner.main</td><td><code>docker exec</code> over <code>docker.sock</code></td><td>Per-iteration dispatch. Worker pipes the prompt on stdin and consumes the JSON-lines stream on stdout. Heartbeats every 30 s.</td></tr>
+            <tr><td>5</td><td>agent_runner → query() → CLI</td><td>Python import · subprocess pipe</td><td>In-process call chain that ends in a Node subprocess running the agent loop.</td></tr>
+            <tr><td>6</td><td>CLI → /plugins</td><td>FS read</td><td>Loads <code>plugin.json</code> + <code>hooks.json</code> for <code>tf-guardrails</code> and <code>tf-mitigations</code> at boot.</td></tr>
+            <tr><td>7</td><td>agent_runner → credential-proxy</td><td>HTTP GET <code>/__token/github</code></td><td>Per-iteration short-lived PAT fetch; PAT never persists in sandbox env.</td></tr>
+            <tr><td>8</td><td>CLI → egress-proxy</td><td><code>HTTPS_PROXY</code> + CONNECT 443</td><td>All HTTPS egress from the sandbox. Tinyproxy enforces FQDN allowlist before tunneling.</td></tr>
+            <tr><td>9</td><td>egress-proxy → api.anthropic.com</td><td>TLS (end-to-end from CLI)</td><td>LLM API calls. Proxy is a CONNECT tunnel — it does not MitM.</td></tr>
+            <tr><td>10</td><td>egress-proxy → api.github.com</td><td>TLS (end-to-end from MCP)</td><td>Used by <code>github-mcp-server</code> for PR diff, comment writes, check runs.</td></tr>
+            <tr><td>11</td><td>agent_runner → /work</td><td>cwd / bind-mount</td><td>Working directory shared with the Worker host via <code>volumes_from</code>.</td></tr>
+            <tr><td>12</td><td>agent_runner → Phoenix</td><td>OTLP HTTP <code>/v1/traces</code></td><td>OpenInference spans + native <code>claude_code.*</code> spans from the CLI's beta traces.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-eyebrow">Trust model</div>
+      <h2>The seven hard rules, mapped</h2>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Rule</th><th>Statement</th><th>Where enforced</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>1</td><td>Credentials never enter the sandbox</td><td><code>credential-proxy</code> + short-lived <code>/__token</code>. One concession: <code>ANTHROPIC_API_KEY</code> is shipped in sandbox env until <code>mitmproxy</code> MitM lands (Open Q#1). <span class="pill pill-warning">concession</span></td></tr>
+            <tr><td>2</td><td>Activity host code is provision + dispatch + observe + teardown — not the agent itself</td><td><code>src/activities/agent_iteration.py</code>: <code>dispatch_into_sandbox</code> via <code>docker exec</code>. No in-process <code>query()</code>.</td></tr>
+            <tr><td>3</td><td>Sandbox lifecycle tied to workflow lifecycle</td><td><code>provision_sandbox</code> at workflow start, <code>teardown_sandbox</code> in the <code>finally</code> cleanup path. GC activity reaps orphans.</td></tr>
+            <tr><td>4</td><td>MCP servers sit outside the sandbox</td><td>GitHub MCP runs as a child of the CLI; credentials sourced from the proxy, not from sandbox env.</td></tr>
+            <tr><td>5</td><td>OTel exporter outside the sandbox</td><td>Phoenix runs on the Trusted side; sandbox only emits OTLP HTTP. <span class="pill pill-positive">live-verified</span></td></tr>
+            <tr><td>6</td><td>Idempotency keys for tool side-effects</td><td><code>tool_call_key(workflow_id, iteration, tool_use_id)</code> stamped as <code>Autofix-Idempotency:</code> trailer on commits.</td></tr>
+            <tr><td>7</td><td>HITL approval gate position depends on layer</td><td>In-sandbox <code>can_use_tool</code> is fast-path; durable gate lives on <code>credential-proxy /__forward</code> which issues <code>Workflow.execute_update</code>.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout callout-positive">
+        <strong>End-to-end live-verified.</strong> Phoenix UI shows three spans after a single sandbox run: <code>claude_code.interaction</code> (root agent loop turn) + two <code>claude_code.llm_request</code> children. Pattern-C is functional in the PoC.
+      </div>
+
+      <div class="callout callout-warning">
+        <strong>Open Question #1 — Anthropic API key.</strong> The current proxy stack cannot MitM HTTPS to inject credentials at the boundary, so <code>ANTHROPIC_API_KEY</code> is shipped into the sandbox env as a deliberate PoC concession. Production target: a <code>mitmproxy</code>-based credential-injector with a CA cert mounted into the sandbox.
+      </div>
+    </section>
+
+    <section>
+      <div class="section-eyebrow">Operational map</div>
+      <h2>Where each component lives in the repo</h2>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Component</th><th>Source</th><th>Compose service</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Gateway</td><td><code>src/gateway/app.py</code></td><td><code>gateway</code></td></tr>
+            <tr><td>Workflow</td><td><code>src/workflows/pr_autofix.py</code></td><td><code>worker</code></td></tr>
+            <tr><td>Activities</td><td><code>src/activities/*.py</code></td><td><code>worker</code></td></tr>
+            <tr><td>credential-proxy</td><td><code>src/proxy/credential_proxy.py</code></td><td><code>credential-proxy</code></td></tr>
+            <tr><td>egress-proxy</td><td><code>sandbox/egress-proxy/*</code> (tinyproxy)</td><td><code>egress-proxy</code></td></tr>
+            <tr><td>Phoenix</td><td><code>arizephoenix/phoenix:latest</code> image</td><td><code>phoenix</code></td></tr>
+            <tr><td>Sandbox image</td><td><code>sandbox/Dockerfile</code></td><td><code>sandbox-image</code> (build-only)</td></tr>
+            <tr><td>agent_runner</td><td><code>src/agent_runner/*</code></td><td>baked into sandbox image at <code>/opt/src/agent_runner</code></td></tr>
+            <tr><td>Plugins</td><td><code>plugins/tf-{guardrails,mitigations}/</code></td><td>baked at <code>/plugins/</code></td></tr>
+            <tr><td>Allowlist</td><td><code>src/repo_allowlist.py</code></td><td>read by <code>gateway</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-eyebrow">Verification</div>
+      <h2>How to reproduce the live run</h2>
+
+      <pre><code>cp .env.example .env  # fill ANTHROPIC_API_KEY, GITHUB_TOKEN, GITHUB_WEBHOOK_SECRET
+docker compose up --build -d
+# Phoenix UI → http://localhost:6006
+# Temporal UI → http://localhost:8233
+# Gateway     → http://localhost:8000/webhook</code></pre>
+
+      <p>Smoke test from outside (manual sandbox spawn) — confirms the agent runs inside the container and emits traces:</p>
+
+      <pre><code>docker run -d --name test-sbx --network agent-temporal_sandbox-net \
+  -e SANDBOX_EGRESS_PROXY_URL=http://egress-proxy:8888 \
+  -e HTTPS_PROXY=http://egress-proxy:8888 \
+  -e CREDENTIAL_PROXY_URL=http://credential-proxy:8443 \
+  -e NO_PROXY=localhost,127.0.0.1,egress-proxy,credential-proxy,phoenix \
+  -e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
+  -e PHOENIX_COLLECTOR_ENDPOINT=http://phoenix:6006/v1/traces \
+  -e OTEL_EXPORTER_OTLP_ENDPOINT=http://phoenix:6006 \
+  agent-sandbox:latest sleep 600
+
+echo 'Reply OK' | docker exec -i test-sbx python -m src.agent_runner.main</code></pre>
+
+      <p>Open <a href="http://localhost:6006">http://localhost:6006</a> — the trace timeline lists <code>claude_code.interaction</code> + nested <code>claude_code.llm_request</code> for the run.</p>
+    </section>
+
+  </main>
+</body>
+</html>
