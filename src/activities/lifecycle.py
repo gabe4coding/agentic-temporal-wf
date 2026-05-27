@@ -26,17 +26,46 @@ def _prepare_workdir_at(
 ) -> None:
     """Idempotent clone-or-fetch + repo-local git identity for the bot.
 
-    Sets user.name / user.email at the repo level so `git commit` from the
-    repo MCP tool succeeds. Without this, `git commit` refuses with
+    Optimised for fast cold starts:
+      - --depth=1               : no history, just the tip
+      - --single-branch         : only fetch refs for `head_ref`
+      - --branch <head_ref>     : land directly on the PR branch
+      - --filter=blob:none      : partial clone, fetch blobs on demand
+                                  (huge win on Go/Node monorepos)
+
+    Falls back to a normal shallow clone if the PR comes from a fork
+    (head_ref not on the target repo). Then the explicit fetch/reset
+    below pulls the right tip.
+
+    Sets user.name / user.email at the repo level so `git commit` from
+    the repo MCP tool succeeds. Without this, `git commit` refuses with
     "Author identity unknown" inside a fresh container.
     """
     target.parent.mkdir(parents=True, exist_ok=True)
     if not (target / ".git").is_dir():
         target.mkdir(exist_ok=True)
-        _run(["git", "clone", "--depth=50", clone_url, "."], target)
+        fast = subprocess.run(
+            [
+                "git", "clone",
+                "--depth=1",
+                "--single-branch",
+                "--branch", head_ref,
+                "--filter=blob:none",
+                clone_url, ".",
+            ],
+            cwd=target, capture_output=True, check=False,
+        )
+        if fast.returncode != 0:
+            # Fallback for forks / missing branch: minimal shallow clone
+            # of the default branch; the fetch below will pick up the PR.
+            _run(
+                ["git", "clone", "--depth=1", "--filter=blob:none",
+                 clone_url, "."],
+                target,
+            )
     _run(["git", "config", "user.name", _AUTOFIX_BOT_NAME], target)
     _run(["git", "config", "user.email", _AUTOFIX_BOT_EMAIL], target)
-    _run(["git", "fetch", "origin", head_ref], target)
+    _run(["git", "fetch", "--depth=1", "origin", head_ref], target)
     # Hard-reset the working tree before checkout so leftover uncommitted
     # edits from a previous failed iteration don't make checkout refuse.
     # (The volume persists across worker restarts; without this reset, a
