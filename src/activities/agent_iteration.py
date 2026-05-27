@@ -115,9 +115,15 @@ async def dispatch_into_sandbox(
         # Block indefinitely on reads — long LLM turns can go minutes
         # without producing stdout. The Activity's start_to_close_timeout
         # (10 min) and the heartbeat (every 30s) own the wall-clock cap.
+        #
+        # CRITICAL: every socket call goes through asyncio.to_thread.
+        # A bare sock._sock.recv() is a blocking syscall and freezes the
+        # event loop, which in turn stops the _heartbeat_loop task —
+        # Temporal then expires the Activity on heartbeat_timeout=90s
+        # even though the subprocess is making progress.
         sock._sock.settimeout(None)
-        sock._sock.sendall(prompt.encode())
-        sock._sock.shutdown(1)  # SHUT_WR
+        await asyncio.to_thread(sock._sock.sendall, prompt.encode())
+        await asyncio.to_thread(sock._sock.shutdown, 1)  # SHUT_WR
 
         raw = b""             # un-parsed bytes from the wire
         stdout_buf = b""      # bytes belonging to stream 1 awaiting newline
@@ -131,7 +137,7 @@ async def dispatch_into_sandbox(
             return lines, buf
 
         while True:
-            chunk = sock._sock.recv(65536)
+            chunk = await asyncio.to_thread(sock._sock.recv, 65536)
             if not chunk:
                 break
             raw += chunk
